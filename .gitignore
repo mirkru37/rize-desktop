@@ -5,5 +5,11 @@ RizeDesktop.xcodeproj/
 build/
 DerivedData/
 
+# RIZ-42: local coverage run outputs (mirrors CI's coverage gate)
+*.xcresult
+coverage-report.txt
+coverage-report.json
+coverage-summary.txt
+
 # macOS
 .DS_Store
