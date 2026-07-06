@@ -38,10 +38,49 @@ protocol LocalStore: Sendable {
     /// Marks the given events as synced as of `date`. Ids that don't exist
     /// are silently ignored.
     func markEventsSynced(ids: [UUID], syncedAt date: Date) async throws
+
+    /// Marks events as synced, but only the rows whose `deleted` flag still
+    /// matches the snapshot captured when the outbox batch was read.
+    ///
+    /// The push cycle fetches a batch, sends it over the network, and only
+    /// then marks it synced — an inherently non-atomic sequence. If a row is
+    /// tombstoned locally while its (pre-tombstone) push is in flight, the
+    /// server accepted the stale version, but the local row now needs a
+    /// *second* push (the tombstone itself). Marking it synced unconditionally
+    /// at that point would drop the tombstone from the outbox forever. This
+    /// guard re-checks `deleted` at write time and only stamps `syncedAt` for
+    /// rows that haven't changed since they were captured, leaving mutated
+    /// rows pending for the next cycle instead.
+    func markEventsSynced(matching snapshots: [SyncedRowSnapshot], syncedAt date: Date) async throws
+}
+
+/// A row's `deleted` state as observed when an outbox batch was fetched, used
+/// by `markEventsSynced(matching:syncedAt:)` to detect concurrent mutation.
+struct SyncedRowSnapshot: Equatable {
+    let eventID: UUID
+    let deleted: Bool
+
+    init(eventID: UUID, deleted: Bool) {
+        self.eventID = eventID
+        self.deleted = deleted
+    }
+
+    init(event: ActivityEvent) {
+        eventID = event.eventID
+        deleted = event.deleted
+    }
 }
 
 extension LocalStore {
     static var maxSyncBatchSize: Int {
         500
+    }
+
+    /// Default fallback for stores/fakes that don't need the guard's
+    /// precision (e.g. tracking-focused test doubles that never exercise
+    /// sync): marks everything in the snapshot unconditionally.
+    /// `GRDBLocalStore` overrides this with the real guarded update.
+    func markEventsSynced(matching snapshots: [SyncedRowSnapshot], syncedAt date: Date) async throws {
+        try await markEventsSynced(ids: snapshots.map(\.eventID), syncedAt: date)
     }
 }

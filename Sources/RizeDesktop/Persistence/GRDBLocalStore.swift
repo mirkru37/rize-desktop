@@ -83,6 +83,21 @@ final class GRDBLocalStore: LocalStore {
                 .updateAll(db, Column("syncedAt").set(to: date))
         }
     }
+
+    func markEventsSynced(matching snapshots: [SyncedRowSnapshot], syncedAt date: Date) async throws {
+        guard !snapshots.isEmpty else {
+            return
+        }
+
+        try await dbWriter.write { db in
+            for snapshot in snapshots {
+                _ = try ActivityEvent
+                    .filter(Column("eventID") == snapshot.eventID)
+                    .filter(Column("deleted") == snapshot.deleted)
+                    .updateAll(db, Column("syncedAt").set(to: date))
+            }
+        }
+    }
 }
 
 enum LocalStoreError: Error {
