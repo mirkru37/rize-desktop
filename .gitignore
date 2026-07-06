@@ -1,0 +1,9 @@
+# XcodeGen-generated project
+RizeDesktop.xcodeproj/
+
+# Build artifacts
+build/
+DerivedData/
+
+# macOS
+.DS_Store

@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # NOTE: this build is intentionally unsigned (CODE_SIGNING_ALLOWED=NO).
+      # Developer ID signing + notarization is tracked as a later ticket; the
+      # artifact attached to this release is not notarized and will trigger
+      # Gatekeeper warnings on the end user's machine until that ticket lands.
+      - name: Build (Release, unsigned)
+        run: |
+          xcodebuild -project RizeDesktop.xcodeproj -scheme RizeDesktop \
+            -configuration Release CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath build build
+
+      - name: Zip .app
+        run: |
+          APP_PATH="build/Build/Products/Release/RizeDesktop.app"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" RizeDesktop.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RizeDesktop.zip
+          generate_release_notes: true
