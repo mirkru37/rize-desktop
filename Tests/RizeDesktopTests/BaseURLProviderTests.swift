@@ -65,4 +65,18 @@ final class BaseURLProviderTests: XCTestCase {
 
         XCTAssertEqual(provider.baseURL(), UserDefaultsBaseURLProvider.defaultURL)
     }
+
+    func testFallsBackThroughHostlessUserDefaultsOverrideToInfoPlist() {
+        // Guards against the UserDefaults override tier's hostless check
+        // being removed: a hostless override must fall through to the
+        // Info.plist tier rather than being returned as-is.
+        let defaults = makeDefaults()
+        defaults.set("http:", forKey: UserDefaultsBaseURLProvider.defaultsKey)
+        let bundle = StubInfoDictionaryProvider(values: [
+            UserDefaultsBaseURLProvider.infoPlistKey: "https://staging.rize-clone.example/v1"
+        ])
+        let provider = UserDefaultsBaseURLProvider(defaults: defaults, bundle: bundle)
+
+        XCTAssertEqual(provider.baseURL(), URL(string: "https://staging.rize-clone.example/v1"))
+    }
 }
