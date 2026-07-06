@@ -51,6 +51,17 @@ final class AuthorizingSyncAPIClientTests: XCTestCase {
         XCTAssertEqual(currentToken, "access-2")
     }
 
+    /// Regression coverage for a flaky first version of this test: with a
+    /// fast fake transport and no gate, one request's whole
+    /// 401->refresh->retry cycle can complete before the other's first
+    /// attempt is even issued, so the two refreshes run sequentially rather
+    /// than concurrently and the assertion below measures nothing. Gating
+    /// both initial `pushEvents` attempts (via `FakeTokenizedSyncAPIClient`'s
+    /// rendezvous gate — same technique as the RIZ-39
+    /// `TrackingEngineReentrancyTests` fix) forces them to actually race
+    /// into `AuthTokenManager.refreshAccessToken()` together. The wait for
+    /// both arrivals is timeout-bounded so a future regression fails fast
+    /// instead of hanging the suite.
     func testConcurrentUnauthorizedRequestsShareASingleRefresh() async throws {
         let authAPI = FakeAuthAPIClient()
         await authAPI.setRefreshBehavior(.success(makeAuthResponse(accessToken: "access-2", refreshToken: "refresh-2")))
@@ -62,10 +73,22 @@ final class AuthorizingSyncAPIClientTests: XCTestCase {
         await syncAPI.enqueuePush(.failure(APIError.unauthorized(nil)))
         await syncAPI.enqueuePush(.success([]))
         await syncAPI.enqueuePush(.success([]))
+
+        let firstArrived = expectation(description: "first pushEvents call arrived at the gate")
+        let secondArrived = expectation(description: "second pushEvents call arrived at the gate")
+        await syncAPI.armGate { count in
+            if count == 1 { firstArrived.fulfill() }
+            if count == 2 { secondArrived.fulfill() }
+        }
+
         let client = AuthorizingSyncAPIClient(inner: syncAPI, tokenManager: tokenManager)
 
         async let first = client.pushEvents([], deviceID: "device-1")
         async let second = client.pushEvents([], deviceID: "device-1")
+
+        await fulfillment(of: [firstArrived, secondArrived], timeout: 5)
+        await syncAPI.openGate()
+
         _ = try await (first, second)
 
         let refreshCallCount = await authAPI.refreshCallCount
