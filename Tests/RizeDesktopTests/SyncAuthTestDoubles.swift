@@ -226,8 +226,49 @@ actor FakeTokenizedSyncAPIClient: TokenizedSyncAPIClient {
     private var pushOutcomes: [Outcome] = []
     private(set) var pushAccessTokensUsed: [String] = []
 
+    /// Optional rendezvous gate for tests that need to force genuine
+    /// concurrency between two `pushEvents` calls (e.g. asserting
+    /// single-flight refresh behavior): with a fast fake transport and no
+    /// gate, one call's whole 401->refresh->retry cycle can complete before
+    /// the other's first attempt is even issued, leaving nothing concurrent
+    /// to observe. Disabled (pass-through) unless armed via `armGate`, same
+    /// gate technique as `TrackingEngineReentrancyTests`'s
+    /// `SuspendableLocalStore` (RIZ-39).
+    private var isGateArmed = false
+    private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var onGateArrival: (@Sendable (Int) -> Void)?
+    private var gateArrivalCount = 0
+
     func enqueuePush(_ outcome: Outcome) {
         pushOutcomes.append(outcome)
+    }
+
+    /// Arms the gate: subsequent `pushEvents` calls suspend at entry until
+    /// `openGate()` releases them all. `handler` is invoked (with the
+    /// running arrival count) every time a call reaches the gate, so tests
+    /// can wait for a specific number of arrivals via a bounded
+    /// `fulfillment(of:timeout:)` before opening it.
+    func armGate(onArrival handler: @escaping @Sendable (Int) -> Void) {
+        isGateArmed = true
+        onGateArrival = handler
+    }
+
+    /// Releases every `pushEvents` call currently suspended at the gate,
+    /// and lets all future calls proceed without suspending.
+    func openGate() {
+        isGateArmed = false
+        let waiters = gateWaiters
+        gateWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private func waitAtGateIfArmed() async {
+        guard isGateArmed else { return }
+        gateArrivalCount += 1
+        onGateArrival?(gateArrivalCount)
+        await withCheckedContinuation { continuation in
+            gateWaiters.append(continuation)
+        }
     }
 
     func pushEvents(
@@ -235,6 +276,7 @@ actor FakeTokenizedSyncAPIClient: TokenizedSyncAPIClient {
         deviceID: String,
         accessToken: String
     ) async throws -> [SyncPushResultDTO] {
+        await waitAtGateIfArmed()
         pushAccessTokensUsed.append(accessToken)
         guard !pushOutcomes.isEmpty else {
             return []

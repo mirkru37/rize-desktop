@@ -8,6 +8,7 @@ import XCTest
 /// permission-onboarding states from
 /// `documentation/architecture-desktop.md` §Component Diagram and
 /// §Permissions & Entitlements.
+@MainActor
 final class MenuContentViewModelTests: XCTestCase {
     /// Minimal `LocalStore` stub: only `fetchTodayActivity()` matters to the
     /// view model, so every other requirement is a no-op/empty stub.

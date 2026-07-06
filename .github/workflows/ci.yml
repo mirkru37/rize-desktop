@@ -14,13 +14,13 @@ env:
 jobs:
   build-test-lint:
     runs-on: macos-15
+    timeout-minutes: 15
     # RIZ-58: Test step (and everything downstream of it: the coverage gate
-    # and its reports) is temporarily skipped per user decision — GitHub
-    # Actions billing is blocked and desktop test runs previously hung
-    # runners. Flip this single flag to "true" to re-enable the Test step
-    # and all coverage machinery together.
+    # and its reports) is gated by this single flag. Historic green runs
+    # took ~3.5 minutes; the job-level timeout above is a safety net against
+    # a prior 44-minute runner hang.
     env:
-      RIZ_58_TESTS_ENABLED: "false"
+      RIZ_58_TESTS_ENABLED: "true"
     permissions:
       contents: read
       pull-requests: write
@@ -40,8 +40,7 @@ jobs:
             -configuration Debug CODE_SIGNING_ALLOWED=NO build
 
       - name: Test
-        # RIZ-58: temporarily skipped per user decision — re-enable by
-        # flipping RIZ_58_TESTS_ENABLED to "true" above.
+        # RIZ-58: gated by RIZ_58_TESTS_ENABLED above.
         if: ${{ env.RIZ_58_TESTS_ENABLED == 'true' }}
         run: |
           rm -rf TestResults.xcresult

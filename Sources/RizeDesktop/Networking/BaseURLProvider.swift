@@ -49,19 +49,12 @@ struct UserDefaultsBaseURLProvider: BaseURLProvider {
     }
 
     func baseURL() -> URL {
-        if
-            let stored = defaults.string(forKey: Self.defaultsKey),
-            let url = URL(string: stored),
-            url.host != nil
-        {
+        if let stored = defaults.string(forKey: Self.defaultsKey), let url = URL(string: stored), url.host != nil {
             return url
         }
 
-        if
-            let configured = infoDictionaryProvider.object(forInfoDictionaryKey: Self.infoPlistKey) as? String,
-            let url = URL(string: configured),
-            url.host != nil
-        {
+        let plistValue = infoDictionaryProvider.object(forInfoDictionaryKey: Self.infoPlistKey) as? String
+        if let configured = plistValue, let url = URL(string: configured), url.host != nil {
             return url
         }
 

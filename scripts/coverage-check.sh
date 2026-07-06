@@ -21,6 +21,13 @@ THRESHOLD="${COVERAGE_THRESHOLD:-50}"
 JSON_REPORT="${COVERAGE_JSON_REPORT:-coverage-report.json}"
 TEXT_REPORT="${COVERAGE_TEXT_REPORT:-coverage-report.txt}"
 
+# Repo root used to filter the coverage report down to first-party code:
+# third-party SPM dependency sources (e.g. GRDB) build under
+# DerivedData/SourcePackages, outside this tree, so filtering by path drops
+# them automatically. Prefer $GITHUB_WORKSPACE (set by Actions to the repo
+# checkout); fall back to git for local runs.
+REPO_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
+
 if [ ! -d "$RESULT_BUNDLE" ]; then
   echo "error: result bundle not found at '$RESULT_BUNDLE'" >&2
   exit 1
@@ -51,11 +58,12 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-python3 - "$JSON_REPORT" "$THRESHOLD" <<'PYEOF'
+python3 - "$JSON_REPORT" "$THRESHOLD" "$REPO_ROOT" <<'PYEOF'
 import json
+import os
 import sys
 
-json_path, threshold_str = sys.argv[1], sys.argv[2]
+json_path, threshold_str, repo_root = sys.argv[1], sys.argv[2], sys.argv[3]
 
 try:
     threshold = float(threshold_str)
@@ -79,6 +87,22 @@ def is_test_target(name: str) -> bool:
     return name.endswith(".xctest")
 
 
+# Only measure first-party code: files that live under this repo checkout.
+# Third-party SPM dependencies (e.g. GRDB) are built into
+# DerivedData/SourcePackages, outside the repo root, so path-filtering
+# drops them (and any future dependency) without hardcoding target/dep
+# names. This never touches which *targets* run, only which files within
+# an app target count toward the coverage total.
+repo_root_real = os.path.realpath(repo_root)
+
+
+def is_first_party(path: str) -> bool:
+    if not path:
+        return False
+    real_path = os.path.realpath(path)
+    return real_path == repo_root_real or real_path.startswith(repo_root_real + os.sep)
+
+
 app_targets = [t for t in targets if not is_test_target(t.get("name", ""))]
 if not app_targets:
     print("error: no non-test targets found in coverage report", file=sys.stderr)
@@ -90,9 +114,15 @@ files = []
 target_rows = []
 
 for target in app_targets:
+    target_files = [f for f in target.get("files", []) if is_first_party(f.get("path", ""))]
+    if not target_files:
+        # Third-party dependency target (or a target with no first-party
+        # files instrumented) - excluded entirely from the measurement.
+        continue
+
     target_executable = 0
     target_covered = 0
-    for f in target.get("files", []):
+    for f in target_files:
         executable = f.get("executableLines", 0)
         covered = f.get("coveredLines", 0)
         target_executable += executable
@@ -118,7 +148,7 @@ for target in app_targets:
     )
 
 if total_executable == 0:
-    print("error: no executable lines found in any app target", file=sys.stderr)
+    print("error: no executable lines found in any first-party app target", file=sys.stderr)
     sys.exit(1)
 
 total_pct = total_covered / total_executable * 100
