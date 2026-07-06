@@ -98,10 +98,9 @@ final class MenuContentViewModelTests: XCTestCase {
     // MARK: - Today summary / top apps
 
     func testRefreshPopulatesTotalTrackedTimeAndTopAppsFromStore() async {
-        let store = StubLocalStore(events: [
-            makeAppActiveEvent(appBundleID: "com.acme.Editor", durationSeconds: 1800),
-            makeAppActiveEvent(appBundleID: "com.acme.Browser", durationSeconds: 600),
-        ])
+        let editorEvent = makeAppActiveEvent(appBundleID: "com.acme.Editor", durationSeconds: 1800)
+        let browserEvent = makeAppActiveEvent(appBundleID: "com.acme.Browser", durationSeconds: 600)
+        let store = StubLocalStore(events: [editorEvent, browserEvent])
         let viewModel = MenuContentViewModel(store: store, engine: StubEngine())
 
         await viewModel.refresh()
@@ -120,11 +119,10 @@ final class MenuContentViewModelTests: XCTestCase {
     }
 
     func testRefreshRespectsInjectedTopAppsLimit() async {
-        let store = StubLocalStore(events: [
-            makeAppActiveEvent(appBundleID: "com.acme.A", durationSeconds: 300),
-            makeAppActiveEvent(appBundleID: "com.acme.B", durationSeconds: 200),
-            makeAppActiveEvent(appBundleID: "com.acme.C", durationSeconds: 100),
-        ])
+        let eventA = makeAppActiveEvent(appBundleID: "com.acme.A", durationSeconds: 300)
+        let eventB = makeAppActiveEvent(appBundleID: "com.acme.B", durationSeconds: 200)
+        let eventC = makeAppActiveEvent(appBundleID: "com.acme.C", durationSeconds: 100)
+        let store = StubLocalStore(events: [eventA, eventB, eventC])
         let viewModel = MenuContentViewModel(store: store, engine: StubEngine(), topAppsLimit: 1)
 
         await viewModel.refresh()

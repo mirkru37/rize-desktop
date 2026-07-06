@@ -25,38 +25,32 @@ final class ActivityAggregationTests: XCTestCase {
     // MARK: - summarize
 
     func testSummarizeSumsAppActiveDurationsAndIgnoresOtherTypes() {
-        let events = [
-            makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 600),
-            makeEvent(type: .idle, appBundleID: nil, durationSeconds: 120),
-            makeEvent(type: .locked, appBundleID: nil, durationSeconds: 60),
-        ]
+        let editorEvent = makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 600)
+        let idleEvent = makeEvent(type: .idle, appBundleID: nil, durationSeconds: 120)
+        let lockedEvent = makeEvent(type: .locked, appBundleID: nil, durationSeconds: 60)
 
-        let summary = ActivityAggregation.summarize(events: events, topAppsLimit: 3)
+        let summary = ActivityAggregation.summarize(events: [editorEvent, idleEvent, lockedEvent], topAppsLimit: 3)
 
         XCTAssertEqual(summary.totalTrackedTime, 600, accuracy: 0.001)
         XCTAssertEqual(summary.topApps, [.init(bundleID: "com.acme.Editor", duration: 600)])
     }
 
     func testSummarizeRanksTopAppsDescendingAndRespectsLimit() {
-        let events = [
-            makeEvent(type: .appActive, appBundleID: "com.acme.A", durationSeconds: 100),
-            makeEvent(type: .appActive, appBundleID: "com.acme.B", durationSeconds: 300),
-            makeEvent(type: .appActive, appBundleID: "com.acme.C", durationSeconds: 200),
-        ]
+        let eventA = makeEvent(type: .appActive, appBundleID: "com.acme.A", durationSeconds: 100)
+        let eventB = makeEvent(type: .appActive, appBundleID: "com.acme.B", durationSeconds: 300)
+        let eventC = makeEvent(type: .appActive, appBundleID: "com.acme.C", durationSeconds: 200)
 
-        let summary = ActivityAggregation.summarize(events: events, topAppsLimit: 2)
+        let summary = ActivityAggregation.summarize(events: [eventA, eventB, eventC], topAppsLimit: 2)
 
         XCTAssertEqual(summary.topApps.map(\.bundleID), ["com.acme.B", "com.acme.C"])
         XCTAssertEqual(summary.totalTrackedTime, 600, accuracy: 0.001)
     }
 
     func testSummarizeAccumulatesMultipleEventsForTheSameApp() {
-        let events = [
-            makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 100),
-            makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 50),
-        ]
+        let firstEvent = makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 100)
+        let secondEvent = makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 50)
 
-        let summary = ActivityAggregation.summarize(events: events, topAppsLimit: 3)
+        let summary = ActivityAggregation.summarize(events: [firstEvent, secondEvent], topAppsLimit: 3)
 
         XCTAssertEqual(summary.topApps, [.init(bundleID: "com.acme.Editor", duration: 150)])
     }
