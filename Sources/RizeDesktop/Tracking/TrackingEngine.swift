@@ -22,6 +22,8 @@ private enum SegmentKind: Equatable {
     /// State is `.active` but no frontmost app has been observed yet; never
     /// persisted.
     case unknown
+    /// The user paused tracking from the menu-bar UI; never persisted.
+    case paused
 }
 
 /// An in-progress activity segment, not yet closed into an `ActivityEvent`.
@@ -54,6 +56,11 @@ actor TrackingEngine {
     private(set) var state: TrackingLifecycleState = .active
     private(set) var permissionState: AccessibilityPermissionState = .granted
     private(set) var lastPersistenceError: Error?
+    /// Whether the user has paused tracking from the menu-bar UI. Distinct
+    /// from `state`: pausing does not change the underlying lifecycle state
+    /// (idle/locked/sleeping detection keeps running), it just stops
+    /// `computeSegmentKind()` from producing a persistable segment.
+    private(set) var isPaused = false
 
     private var privacySettings: TrackingPrivacySettings
     private var currentAppBundleID: String?
@@ -147,6 +154,22 @@ actor TrackingEngine {
         permissionState = isTrusted ? .granted : .denied
     }
 
+    /// Stops producing persistable segments until `resume()` is called, per
+    /// the menu-bar UI's pause control. `isPaused` is set synchronously
+    /// before the only `await` below, matching the `updatePrivacySettings`
+    /// pattern above — no state mutation happens across a suspension point
+    /// (RIZ-39 review, finding H1).
+    func pause() async {
+        isPaused = true
+        await reconcileSegment()
+    }
+
+    /// Resumes producing persistable segments after `pause()`.
+    func resume() async {
+        isPaused = false
+        await reconcileSegment()
+    }
+
     // MARK: - State machine
 
     /// - Parameter boundary: Overrides the segment boundary used to close
@@ -178,6 +201,9 @@ actor TrackingEngine {
     }
 
     private func computeSegmentKind() -> SegmentKind {
+        guard !isPaused else {
+            return .paused
+        }
         switch state {
         case .active:
             guard let bundleID = currentAppBundleID else {
@@ -275,7 +301,7 @@ actor TrackingEngine {
         case .locked:
             type = .locked
             precision = .exact
-        case .excluded, .unknown:
+        case .excluded, .unknown, .paused:
             return nil
         }
 
