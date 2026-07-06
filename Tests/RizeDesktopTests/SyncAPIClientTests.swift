@@ -29,17 +29,14 @@ final class SyncAPIClientTests: XCTestCase {
 
     func testPushEventsSendsAuthorizedPostAndDecodesResults() async throws {
         let transport = FakeHTTPTransport()
-        let responseBody = try JSONEncoder.rizeAPIEncoder.encode(SyncPushResponseDTO(results: [
-            SyncPushResultDTO(
-                index: 0,
-                entityType: "activity_event",
-                eventID: "evt-1",
-                id: nil,
-                status: .applied,
-                serverSeq: 1,
-                error: nil
-            )
-        ]))
+        // Wire shape per documentation/sync-protocol.md §Push Response schema.
+        let responseBody = Data("""
+        {
+          "results": [
+            { "index": 0, "entity_type": "activity_event", "event_id": "evt-1", "status": "applied", "server_seq": 1 }
+          ]
+        }
+        """.utf8)
         await transport.setOutcome(.success(HTTPResponse(statusCode: 200, body: responseBody)))
         let client = makeClient(transport: transport)
 
@@ -86,11 +83,10 @@ final class SyncAPIClientTests: XCTestCase {
 
     func testFetchChangesWithCursorSendsAuthorizedGetWithQueryItems() async throws {
         let transport = FakeHTTPTransport()
-        let responseBody = try JSONEncoder.rizeAPIEncoder.encode(SyncChangesResponseDTO(
-            changes: SyncChangesDTO(activityEvents: nil, focusSessions: nil),
-            nextCursor: "cursor-2",
-            hasMore: false
-        ))
+        // Wire shape per documentation/sync-protocol.md §Pull Response schema.
+        let responseBody = Data("""
+        { "changes": {}, "next_cursor": "cursor-2", "has_more": false }
+        """.utf8)
         await transport.setOutcome(.success(HTTPResponse(statusCode: 200, body: responseBody)))
         let client = makeClient(transport: transport)
 
@@ -108,11 +104,9 @@ final class SyncAPIClientTests: XCTestCase {
 
     func testFetchChangesWithNoCursorOmitsCursorQueryItem() async throws {
         let transport = FakeHTTPTransport()
-        let responseBody = try JSONEncoder.rizeAPIEncoder.encode(SyncChangesResponseDTO(
-            changes: SyncChangesDTO(activityEvents: nil, focusSessions: nil),
-            nextCursor: "",
-            hasMore: false
-        ))
+        let responseBody = Data("""
+        { "changes": {}, "next_cursor": "", "has_more": false }
+        """.utf8)
         await transport.setOutcome(.success(HTTPResponse(statusCode: 200, body: responseBody)))
         let client = makeClient(transport: transport)
 
