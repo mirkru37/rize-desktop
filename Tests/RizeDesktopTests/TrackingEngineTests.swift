@@ -54,6 +54,65 @@ final class TrackingEngineTests: XCTestCase {
         }
     }
 
+    /// A `LocalStore` whose `writeEvent` suspends until the test explicitly
+    /// opens the gate, used to reproduce actor reentrancy during
+    /// persistence (RIZ-39 review, finding H1/M5). Every `writeEvent` call
+    /// suspends independently until the gate is opened, after which future
+    /// calls pass straight through.
+    private actor SuspendableLocalStore: LocalStore {
+        private(set) var writtenEvents: [ActivityEvent] = []
+        private var isGateOpen = false
+        private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+        private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+        private var entryCount = 0
+
+        func writeEvent(_ event: ActivityEvent) async throws {
+            entryCount += 1
+            entryWaiters.forEach { $0.resume() }
+            entryWaiters.removeAll()
+            if !isGateOpen {
+                await withCheckedContinuation { continuation in
+                    gateWaiters.append(continuation)
+                }
+            }
+            writtenEvents.append(event)
+        }
+
+        func tombstoneEvent(id: UUID, at date: Date) async throws {}
+        func upsertSession(_ session: FocusSession) async throws {}
+        func fetchTodayActivity() async throws -> [ActivityEvent] {
+            writtenEvents
+        }
+
+        func fetchUnsyncedEvents(limit: Int) async throws -> [ActivityEvent] {
+            []
+        }
+
+        func markEventsSynced(ids: [UUID], syncedAt date: Date) async throws {}
+
+        /// Suspends until at least one `writeEvent` call has entered
+        /// (reached this method), so the test can be certain the engine is
+        /// actually suspended mid-persistence before delivering a
+        /// competing signal.
+        func waitForFirstEntry() async {
+            guard entryCount == 0 else {
+                return
+            }
+            await withCheckedContinuation { continuation in
+                entryWaiters.append(continuation)
+            }
+        }
+
+        /// Releases every `writeEvent` call currently suspended, and lets
+        /// all future calls proceed without suspending.
+        func openGate() {
+            isGateOpen = true
+            let waiters = gateWaiters
+            gateWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
     private struct TestStoreError: Error {}
 
     private var referenceDate: Date!
@@ -137,6 +196,10 @@ final class TrackingEngineTests: XCTestCase {
     // MARK: - Idle in/out
 
     func testIdleTransitionClosesActiveSegmentAndOpensIdleSegment() async {
+        // idleThreshold=300; the poller detects idleness at t=350 but the
+        // last real input was 320s before that (t=30, per finding M1), so
+        // the active segment should be back-dated to close at t=30, not the
+        // t=350 detection time, and idle should pick up from there.
         let engine = makeEngine(idleThreshold: 300)
 
         await engine.handleFrontmostAppChanged(bundleID: "com.acme.Editor")
@@ -149,13 +212,35 @@ final class TrackingEngineTests: XCTestCase {
         XCTAssertEqual(events.count, 2)
         XCTAssertEqual(events[0].type, .appActive)
         XCTAssertEqual(events[0].precision, .exact)
-        XCTAssertEqual(events[0].endedAt.timeIntervalSince(events[0].startedAt), 350, accuracy: 0.001)
+        XCTAssertEqual(events[0].endedAt.timeIntervalSince(events[0].startedAt), 30, accuracy: 0.001)
         XCTAssertEqual(events[1].type, .idle)
         XCTAssertEqual(events[1].precision, .approximate)
         XCTAssertNil(events[1].appBundleID)
-        XCTAssertEqual(events[1].endedAt.timeIntervalSince(events[1].startedAt), 60, accuracy: 0.001)
+        XCTAssertEqual(events[1].startedAt, events[0].endedAt)
+        // Idle segment runs from the back-dated boundary (t=30) to the
+        // active-detection instant (t=410): 380s.
+        XCTAssertEqual(events[1].endedAt.timeIntervalSince(events[1].startedAt), 380, accuracy: 0.001)
         let state = await engine.state
         XCTAssertEqual(state, .active)
+    }
+
+    func testIdleBoundaryIsClampedToActiveSegmentStartAndDroppedBelowMinimum() async {
+        // The back-dated boundary (t=310-400=-90) precedes the active
+        // segment's start (t=0); it must clamp to t=0, and since the
+        // resulting active segment duration (0s) is under the 5s minimum,
+        // the active segment is dropped as noise rather than persisted.
+        let engine = makeEngine(idleThreshold: 300)
+
+        await engine.handleFrontmostAppChanged(bundleID: "com.acme.Editor")
+        clock.advance(by: 310)
+        await engine.handleIdleTimeSample(secondsSinceLastEvent: 400)
+        clock.advance(by: 20)
+        await engine.handleIdleTimeSample(secondsSinceLastEvent: 5)
+
+        let events = await store.writtenEvents
+        XCTAssertEqual(events.map(\.type), [.idle])
+        XCTAssertEqual(events[0].startedAt, referenceDate)
+        XCTAssertEqual(events[0].endedAt.timeIntervalSince(events[0].startedAt), 330, accuracy: 0.001)
     }
 
     func testIdleSampleBelowThresholdWhileActiveDoesNotTransition() async {
@@ -169,6 +254,71 @@ final class TrackingEngineTests: XCTestCase {
         XCTAssertEqual(state, .active)
         let events = await store.writtenEvents
         XCTAssertTrue(events.isEmpty)
+    }
+
+    // MARK: - Reentrancy (H1 / M5)
+
+    func testReentrantAppSwitchDuringPersistenceDoesNotClobberSegments() async {
+        // Regression test for RIZ-39 review finding H1: a competing signal
+        // arriving while a previous segment's write is still suspended must
+        // not have its own segment overwritten once that write resumes.
+        let suspendableStore = SuspendableLocalStore()
+        let engine = TrackingEngine(
+            store: suspendableStore,
+            clock: clock,
+            idleThreshold: 300,
+            minimumEventDuration: 5
+        )
+
+        await engine.handleFrontmostAppChanged(bundleID: "com.apple.Terminal")
+        clock.advance(by: 10)
+
+        // Start closing the Terminal segment; its persistence will suspend
+        // until the gate opens.
+        let firstSwitch = Task {
+            await engine.handleFrontmostAppChanged(bundleID: "com.apple.Safari")
+        }
+        await suspendableStore.waitForFirstEntry()
+
+        // Deliver a competing app switch while the first switch's write is
+        // still in flight.
+        clock.advance(by: 8)
+        await engine.handleFrontmostAppChanged(bundleID: "com.apple.Mail")
+
+        await suspendableStore.openGate()
+        await firstSwitch.value
+
+        // A further switch proves the engine's current segment reflects
+        // Mail, not stale data from the suspended Safari close.
+        clock.advance(by: 20)
+        await engine.handleFrontmostAppChanged(bundleID: "com.apple.Finder")
+
+        let events = await suspendableStore.writtenEvents
+        XCTAssertEqual(
+            Set(events.map(\.appBundleID)),
+            Set(["com.apple.Terminal", "com.apple.Safari", "com.apple.Mail"])
+        )
+        for event in events {
+            XCTAssertGreaterThan(event.endedAt, event.startedAt)
+        }
+
+        guard let terminalEvent = events.first(where: { $0.appBundleID == "com.apple.Terminal" }) else {
+            return XCTFail("missing Terminal event")
+        }
+        guard let safariEvent = events.first(where: { $0.appBundleID == "com.apple.Safari" }) else {
+            return XCTFail("missing Safari event")
+        }
+        guard let mailEvent = events.first(where: { $0.appBundleID == "com.apple.Mail" }) else {
+            return XCTFail("missing Mail event")
+        }
+
+        XCTAssertEqual(terminalEvent.endedAt.timeIntervalSince(terminalEvent.startedAt), 10, accuracy: 0.001)
+        XCTAssertEqual(safariEvent.endedAt.timeIntervalSince(safariEvent.startedAt), 8, accuracy: 0.001)
+        XCTAssertEqual(mailEvent.endedAt.timeIntervalSince(mailEvent.startedAt), 20, accuracy: 0.001)
+
+        // Segments are contiguous, i.e. monotonic and correctly attributed.
+        XCTAssertEqual(safariEvent.startedAt, terminalEvent.endedAt)
+        XCTAssertEqual(mailEvent.startedAt, safariEvent.endedAt)
     }
 
     // MARK: - Lock / sleep

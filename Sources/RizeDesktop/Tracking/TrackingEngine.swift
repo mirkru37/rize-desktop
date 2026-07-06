@@ -113,7 +113,15 @@ actor TrackingEngine {
     func handleIdleTimeSample(secondsSinceLastEvent seconds: TimeInterval) async {
         switch state {
         case .active where seconds > idleThreshold:
-            await transition(to: .idle)
+            // Back-date the active -> idle boundary to the true last-input
+            // instant rather than detection time: the user actually went
+            // idle `seconds` ago, so the active segment should not include
+            // the idle time it took the poller to notice. See RIZ-39
+            // review, finding M1. `closeSegmentAndAdvance` clamps this to
+            // the active segment's `startedAt` if it would otherwise
+            // precede it.
+            let lastInputInstant = clock.now().addingTimeInterval(-seconds)
+            await transition(to: .idle, boundary: lastInputInstant)
         case .idle where seconds < idleThreshold:
             await transition(to: .active)
         default:
@@ -141,7 +149,11 @@ actor TrackingEngine {
 
     // MARK: - State machine
 
-    private func transition(to newState: TrackingLifecycleState) async {
+    /// - Parameter boundary: Overrides the segment boundary used to close
+    ///   the outgoing segment and open the incoming one. Defaults to
+    ///   `clock.now()` (detection time); the active -> idle transition
+    ///   passes a back-dated last-input instant instead (finding M1).
+    private func transition(to newState: TrackingLifecycleState, boundary: Date? = nil) async {
         guard newState != state else {
             return
         }
@@ -152,7 +164,7 @@ actor TrackingEngine {
         // and let something else decide what to do with it" from the
         // engine's point of view. No attribution UI exists yet, so the
         // effective behavior today is discard.
-        await reconcileSegment()
+        await reconcileSegment(boundary: boundary)
     }
 
     private func filteredTitle(_ rawTitle: String?) -> String? {
@@ -186,29 +198,58 @@ actor TrackingEngine {
 
     // MARK: - Segmentation
 
-    private func reconcileSegment() async {
+    /// Closes the current segment (if any) and opens the next one, then
+    /// persists the closed segment's event.
+    ///
+    /// All in-memory segment state — reading the closing segment, deciding
+    /// whether it's long enough to keep, and swapping in the new
+    /// `openSegment` — happens synchronously in `closeSegmentAndAdvance`,
+    /// with no `await` in between. Only the persistence call below
+    /// suspends. This matters because `TrackingEngine` is an actor: any
+    /// `await` inside this method is a reentrancy point where another
+    /// queued signal (e.g. a competing app switch) can run before this call
+    /// resumes. Previously `openSegment` was assigned *after* awaiting the
+    /// store write, so a reentrant call could set its own `openSegment`
+    /// during that suspension, only for this call to resume and clobber it
+    /// with stale data — losing switches and producing non-monotonic
+    /// timestamps. See RIZ-39 review, finding H1.
+    private func reconcileSegment(boundary: Date? = nil) async {
         let newKind = computeSegmentKind()
         guard newKind != openSegment?.kind else {
             return
         }
-        let now = clock.now()
-        await closeOpenSegment(endedAt: now)
-        openSegment = OpenSegment(startedAt: now, kind: newKind)
+        guard let event = closeSegmentAndAdvance(to: newKind, at: boundary ?? clock.now()) else {
+            return
+        }
+        await persist(event)
     }
 
-    private func closeOpenSegment(endedAt: Date) async {
-        guard let segment = openSegment else {
-            return
-        }
-        openSegment = nil
+    /// Synchronously closes the currently-open segment (if long enough to
+    /// keep) and replaces it with a new segment of `newKind` starting at
+    /// the boundary. Returns the closed segment's event, if any, for the
+    /// caller to persist. Contains no suspension points.
+    ///
+    /// `requestedBoundary` may be back-dated (finding M1's idle boundary).
+    /// It's clamped to the closing segment's `startedAt` so a boundary that
+    /// precedes the segment's start can never produce a negative-duration
+    /// event; if the clamped duration is under the minimum, the segment is
+    /// dropped as noise rather than persisted, exactly as an ordinary
+    /// too-short segment would be.
+    private func closeSegmentAndAdvance(to newKind: SegmentKind, at requestedBoundary: Date) -> ActivityEvent? {
+        let closingSegment = openSegment
+        let boundary = closingSegment.map { max(requestedBoundary, $0.startedAt) } ?? requestedBoundary
+        openSegment = OpenSegment(startedAt: boundary, kind: newKind)
 
-        guard endedAt.timeIntervalSince(segment.startedAt) >= minimumEventDuration else {
-            return
+        guard let closingSegment else {
+            return nil
         }
-        guard let event = makeActivityEvent(for: segment.kind, startedAt: segment.startedAt, endedAt: endedAt) else {
-            return
+        guard boundary.timeIntervalSince(closingSegment.startedAt) >= minimumEventDuration else {
+            return nil
         }
+        return makeActivityEvent(for: closingSegment.kind, startedAt: closingSegment.startedAt, endedAt: boundary)
+    }
 
+    private func persist(_ event: ActivityEvent) async {
         do {
             try await store.writeEvent(event)
         } catch {
