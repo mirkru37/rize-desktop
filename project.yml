@@ -10,6 +10,11 @@ settings:
     SWIFT_VERSION: "5.10"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
 
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift.git
+    from: "6.29.0"
+
 targets:
   RizeDesktop:
     type: application
@@ -17,6 +22,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Sources/RizeDesktop
+    dependencies:
+      - package: GRDB
+        product: GRDB
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.rizeclone.desktop
