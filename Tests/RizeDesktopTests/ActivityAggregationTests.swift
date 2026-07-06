@@ -1,0 +1,97 @@
+@testable import RizeDesktop
+import XCTest
+
+/// Exercises `ActivityAggregation`'s pure summarization and formatting,
+/// which back the menu-bar dashboard's "today" summary
+/// (`documentation/architecture-desktop.md` §Component Diagram).
+final class ActivityAggregationTests: XCTestCase {
+    private let referenceDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func makeEvent(
+        type: ActivityEventType,
+        appBundleID: String?,
+        durationSeconds: TimeInterval
+    ) -> ActivityEvent {
+        ActivityEvent(
+            eventID: UUID(),
+            startedAt: referenceDate,
+            endedAt: referenceDate.addingTimeInterval(durationSeconds),
+            type: type,
+            appBundleID: appBundleID,
+            insertedAt: referenceDate
+        )
+    }
+
+    // MARK: - summarize
+
+    func testSummarizeSumsAppActiveDurationsAndIgnoresOtherTypes() {
+        let events = [
+            makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 600),
+            makeEvent(type: .idle, appBundleID: nil, durationSeconds: 120),
+            makeEvent(type: .locked, appBundleID: nil, durationSeconds: 60),
+        ]
+
+        let summary = ActivityAggregation.summarize(events: events, topAppsLimit: 3)
+
+        XCTAssertEqual(summary.totalTrackedTime, 600, accuracy: 0.001)
+        XCTAssertEqual(summary.topApps, [.init(bundleID: "com.acme.Editor", duration: 600)])
+    }
+
+    func testSummarizeRanksTopAppsDescendingAndRespectsLimit() {
+        let events = [
+            makeEvent(type: .appActive, appBundleID: "com.acme.A", durationSeconds: 100),
+            makeEvent(type: .appActive, appBundleID: "com.acme.B", durationSeconds: 300),
+            makeEvent(type: .appActive, appBundleID: "com.acme.C", durationSeconds: 200),
+        ]
+
+        let summary = ActivityAggregation.summarize(events: events, topAppsLimit: 2)
+
+        XCTAssertEqual(summary.topApps.map(\.bundleID), ["com.acme.B", "com.acme.C"])
+        XCTAssertEqual(summary.totalTrackedTime, 600, accuracy: 0.001)
+    }
+
+    func testSummarizeAccumulatesMultipleEventsForTheSameApp() {
+        let events = [
+            makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 100),
+            makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 50),
+        ]
+
+        let summary = ActivityAggregation.summarize(events: events, topAppsLimit: 3)
+
+        XCTAssertEqual(summary.topApps, [.init(bundleID: "com.acme.Editor", duration: 150)])
+    }
+
+    func testSummarizeIgnoresNonPositiveDurationEvents() {
+        let events = [makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 0)]
+
+        let summary = ActivityAggregation.summarize(events: events, topAppsLimit: 3)
+
+        XCTAssertEqual(summary, .empty)
+    }
+
+    func testSummarizeOfEmptyEventsIsEmptySummary() {
+        XCTAssertEqual(ActivityAggregation.summarize(events: [], topAppsLimit: 3), .empty)
+    }
+
+    // MARK: - formatDuration
+
+    func testFormatDurationBelowOneHourShowsMinutesOnly() {
+        XCTAssertEqual(ActivityAggregation.formatDuration(45 * 60), "45m")
+    }
+
+    func testFormatDurationWithWholeHoursShowsHoursAndMinutes() {
+        XCTAssertEqual(ActivityAggregation.formatDuration(65 * 60), "1h 5m")
+    }
+
+    func testFormatDurationZeroIsZeroMinutes() {
+        XCTAssertEqual(ActivityAggregation.formatDuration(0), "0m")
+    }
+
+    func testFormatDurationFloorsPartialMinutes() {
+        XCTAssertEqual(ActivityAggregation.formatDuration(119), "1m")
+    }
+
+    func testFormatDurationClampsNegativeToZero() {
+        XCTAssertEqual(ActivityAggregation.formatDuration(-30), "0m")
+    }
+}
