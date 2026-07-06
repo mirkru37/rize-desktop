@@ -22,8 +22,10 @@ final class GRDBLocalStoreTests: XCTestCase {
         try DatabaseMigrations.makeMigrator().migrate(dbQueue)
 
         calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-        referenceNow = calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 12))!
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        referenceNow = try XCTUnwrap(
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 12))
+        )
     }
 
     override func tearDown() {

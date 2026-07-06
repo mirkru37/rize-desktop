@@ -12,6 +12,14 @@ enum DatabaseMigrations {
     static func makeMigrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
 
+        registerV1ActivityEvents(&migrator)
+        registerV2FocusSessions(&migrator)
+
+        return migrator
+    }
+
+    /// v1: creates the `activity_events` table and its supporting indexes.
+    private static func registerV1ActivityEvents(_ migrator: inout DatabaseMigrator) {
         migrator.registerMigration("v1_create_activity_events") { db in
             try db.create(table: ActivityEvent.databaseTableName) { table in
                 table.column("eventID", .text).primaryKey()
@@ -42,7 +50,10 @@ enum DatabaseMigrations {
                 columns: ["syncedAt"]
             )
         }
+    }
 
+    /// v2: creates the `focus_sessions` table and its supporting indexes.
+    private static func registerV2FocusSessions(_ migrator: inout DatabaseMigrator) {
         migrator.registerMigration("v2_create_focus_sessions") { db in
             try db.create(table: FocusSession.databaseTableName) { table in
                 table.column("id", .text).primaryKey()
@@ -71,7 +82,5 @@ enum DatabaseMigrations {
                 columns: ["pendingSync"]
             )
         }
-
-        return migrator
     }
 }
