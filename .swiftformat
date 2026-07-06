@@ -1,0 +1,27 @@
+--swiftversion 5.10
+--indent 4
+--maxwidth 120
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+--closingparen balanced
+--exponentcase lowercase
+--exponentgrouping disabled
+--fractiongrouping disabled
+--hexgrouping 4,8
+--hexliteralcase uppercase
+--ifdef indent
+--indentcase false
+--linebreaks lf
+--octalgrouping 4,8
+--operatorfunc spaced
+--patternlet hoist
+--ranges spaced
+--self remove
+--semicolons inline-only
+--stripunusedargs closure-only
+--trimwhitespace always
+--voidtype void
+--wrapternary before-operators
+
+--exclude RizeDesktop.xcodeproj,.build,DerivedData,build

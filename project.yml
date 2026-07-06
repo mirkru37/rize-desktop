@@ -1,0 +1,63 @@
+name: RizeDesktop
+options:
+  bundleIdPrefix: com.rizeclone
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  RizeDesktop:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/RizeDesktop
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rizeclone.desktop
+        PRODUCT_NAME: RizeDesktop
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ENABLE_HARDENED_RUNTIME: true
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: Sources/RizeDesktop/App/Info.plist
+      properties:
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSUIElement: true
+        NSHumanReadableCopyright: "Copyright © RizeClone."
+
+  RizeDesktopTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/RizeDesktopTests
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+    dependencies:
+      - target: RizeDesktop
+
+schemes:
+  RizeDesktop:
+    build:
+      targets:
+        RizeDesktop: all
+        RizeDesktopTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - RizeDesktopTests
+    archive:
+      config: Release
