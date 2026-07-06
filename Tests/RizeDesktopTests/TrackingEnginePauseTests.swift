@@ -119,4 +119,20 @@ final class TrackingEnginePauseTests: XCTestCase {
         let permissionState = await engine.permissionState
         XCTAssertEqual(permissionState, .denied)
     }
+
+    func testUpdatingPrivacySettingsToExcludeTheFrontmostAppClosesItsOpenSegment() async {
+        let engine = makeEngine()
+        await engine.handleFrontmostAppChanged(bundleID: "com.acme.Editor")
+        clock.advance(by: 10)
+
+        await engine.updatePrivacySettings(TrackingPrivacySettings(
+            excludedBundleIDs: ["com.acme.Editor"],
+            captureWindowTitles: true,
+            privateTitleMarkers: []
+        ))
+
+        let events = await store.writtenEvents
+        XCTAssertEqual(events.map(\.type), [.appActive])
+        XCTAssertEqual(events[0].endedAt.timeIntervalSince(events[0].startedAt), 10, accuracy: 0.001)
+    }
 }

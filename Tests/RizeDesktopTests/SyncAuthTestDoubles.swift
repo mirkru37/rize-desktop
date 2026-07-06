@@ -36,6 +36,61 @@ func makeAuthResponse(
 
 // MARK: - Auth
 
+/// Shared `DeviceInfoProviding` stub returning a fixed device shape,
+/// used everywhere a test needs an `AuthTokenManager` but doesn't care about
+/// device-info details (kept here rather than duplicated per test file).
+struct StubDeviceInfoProvider: DeviceInfoProviding {
+    func makeDevice(existingID: UUID?) -> DeviceRequestDTO {
+        DeviceRequestDTO(
+            id: existingID,
+            platform: "macos",
+            name: "Test",
+            model: "Mac",
+            osVersion: "14.5",
+            appVersion: "0.1.0"
+        )
+    }
+}
+
+/// Builds an `AuthTokenManager` wired to `StubDeviceInfoProvider`, shared by
+/// every test file that needs a real `AuthTokenManager` over fakes
+/// (`AuthTokenManagerTests`, `AuthSessionViewModelTests`, and the
+/// sync-coordinator/engine suites that only need one to satisfy
+/// `AuthorizingSyncAPIClient`'s initializer).
+func makeAuthTokenManager(
+    api: AuthAPIClient = FakeAuthAPIClient(),
+    storage: AuthTokenStorage = InMemoryAuthTokenStorage()
+) -> AuthTokenManager {
+    AuthTokenManager(api: api, storage: storage, deviceInfoProvider: StubDeviceInfoProvider())
+}
+
+/// In-memory `SecureStore`, for tests exercising `KeychainAuthTokenStorage`'s
+/// key-mapping logic without touching the real Keychain (the real Keychain
+/// is exercised separately by `SecureStoreTests` against
+/// `KeychainSecureStore` itself).
+final class InMemorySecureStore: SecureStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: String] = [:]
+
+    func read(_ key: String) throws -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key]
+    }
+
+    func write(_ value: String, for key: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        values[key] = value
+    }
+
+    func delete(_ key: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        values.removeValue(forKey: key)
+    }
+}
+
 /// In-memory `AuthTokenStorage`. A plain lock-guarded class rather than an
 /// actor because the protocol's methods are synchronous (matching
 /// `KeychainSecureStore`'s synchronous Keychain calls).

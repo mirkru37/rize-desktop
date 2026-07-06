@@ -107,4 +107,25 @@ final class SyncCoordinatorTests: XCTestCase {
         let lastErrorMessage = await statusViewModel.lastErrorMessage
         XCTAssertNotNil(lastErrorMessage, "retries are exhausted, the cycle must report failure")
     }
+
+    /// `stop()` before any `start()`, and a second `start()` call while
+    /// already started, must both be safe no-ops, and the coordinator must
+    /// remain usable for a manual `syncNow()` afterwards.
+    func testStopBeforeStartAndDuplicateStartAreSafeNoOps() async {
+        let engine = makeEngine(syncAPI: FlakyFetchSyncAPIClient(failures: 0))
+        let sleeper = RecordingSleeper()
+        let statusViewModel = await SyncStatusViewModel()
+        let coordinator = SyncCoordinator(engine: engine, sleeper: sleeper, statusViewModel: statusViewModel)
+
+        await coordinator.stop()
+
+        await coordinator.start()
+        await coordinator.start()
+        await coordinator.stop()
+
+        await coordinator.syncNow()
+
+        let lastSyncedAt = await statusViewModel.lastSyncedAt
+        XCTAssertNotNil(lastSyncedAt, "the coordinator must still be usable after start/stop cycling")
+    }
 }

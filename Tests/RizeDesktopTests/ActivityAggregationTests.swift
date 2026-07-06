@@ -89,6 +89,15 @@ final class ActivityAggregationTests: XCTestCase {
         XCTAssertEqual(summary.topApps, [.init(bundleID: "com.acme.Editor", duration: 150)])
     }
 
+    func testSummarizeCountsTotalTimeButOmitsAppsWithNoBundleIDFromTheBreakdown() {
+        let event = makeEvent(type: .appActive, appBundleID: nil, durationSeconds: 100)
+
+        let summary = ActivityAggregation.summarize(events: [event], topAppsLimit: 3)
+
+        XCTAssertEqual(summary.totalTrackedTime, 100, accuracy: 0.001)
+        XCTAssertEqual(summary.topApps, [])
+    }
+
     func testSummarizeIgnoresNonPositiveDurationEvents() {
         let events = [makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 0)]
 

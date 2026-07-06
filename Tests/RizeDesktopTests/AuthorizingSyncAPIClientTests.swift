@@ -95,6 +95,20 @@ final class AuthorizingSyncAPIClientTests: XCTestCase {
         XCTAssertEqual(refreshCallCount, 1, "concurrent 401s must share a single refresh")
     }
 
+    func testFetchChangesUsesCurrentAccessTokenWithoutRefreshing() async throws {
+        let authAPI = FakeAuthAPIClient()
+        let tokenManager = try await makeAuthenticatedManager(authAPI: authAPI)
+        let syncAPI = FakeTokenizedSyncAPIClient()
+        let client = AuthorizingSyncAPIClient(inner: syncAPI, tokenManager: tokenManager)
+
+        let response = try await client.fetchChanges(cursor: "cursor-1", limit: 200)
+
+        XCTAssertEqual(response.nextCursor, "cursor-1")
+        XCTAssertFalse(response.hasMore)
+        let refreshCallCount = await authAPI.refreshCallCount
+        XCTAssertEqual(refreshCallCount, 0)
+    }
+
     func testRefreshFailureDuringRetryPropagatesAndLeavesSignedOut() async throws {
         let authAPI = FakeAuthAPIClient()
         await authAPI.setRefreshBehavior(.failure(TestError.network))
