@@ -11,5 +11,8 @@ coverage-report.txt
 coverage-report.json
 coverage-summary.txt
 
+# RIZ-55: user-local build configuration overrides (see Config.example.xcconfig)
+Config.local.xcconfig
+
 # macOS
 .DS_Store

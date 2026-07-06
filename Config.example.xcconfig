@@ -1,0 +1,31 @@
+// Example build-time configuration for RizeDesktop.
+//
+// This file is committed and provides safe defaults for every
+// configurable build setting, so `make generate`/`make build`/`make test`
+// work out of the box on a fresh clone with no setup.
+//
+// To override any value locally (e.g. to point at a staging backend)
+// without touching this file or project.yml, and without committing your
+// change:
+//   1. Copy this file to `Config.local.xcconfig` (already gitignored).
+//   2. Set the values you want to override there.
+//   3. Run `make generate` to regenerate the Xcode project.
+// The #include? below pulls in Config.local.xcconfig if it exists, and its
+// settings win because the include is last in this file.
+
+// RIZ-41/RIZ-55: the sync/auth API's base URL. Flows through project.yml's
+// `configFiles` into this xcconfig, then into Info.plist's
+// RIZE_BACKEND_BASE_URL key, and is read at runtime by
+// `UserDefaultsBaseURLProvider.baseURL()`. A `UserDefaults` override
+// (key `UserDefaultsBaseURLProvider.defaultsKey`, `"apiBaseURL"`) still
+// takes priority over this value at runtime, for QA without a rebuild.
+// xcconfig treats `//` as a comment delimiter anywhere on a line, so a raw
+// `http://...` value here would be truncated to `http:`. `$()` is xcconfig's
+// empty-variable-reference escape: it expands to nothing but splits the
+// `//` so the parser doesn't treat it as a comment. Do not "simplify" this
+// back to `http://localhost:8080/v1` — that reintroduces the truncation bug
+// (see rize-mobile's RIZ-56 fix for the same issue).
+RIZE_BACKEND_BASE_URL = http:/$()/localhost:8080/v1
+
+// Local overrides — must stay last so Config.local.xcconfig wins.
+#include? "Config.local.xcconfig"
