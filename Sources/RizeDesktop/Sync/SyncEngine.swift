@@ -142,13 +142,15 @@ struct SyncEngine {
         return pageCount
     }
 
-    /// Applies a pulled page to `LocalStore`. `activity_events` are fully
-    /// applied (upserts + tombstones). `focus_sessions` upserts are applied
-    /// via `LocalStore.upsertSession` — blind overwrite, since `LocalStore`
-    /// has no fetch-by-id to LWW-compare against the incoming `updated_at`
-    /// (the server has already resolved LWW before this page was produced,
-    /// so this only matters for a local edit made after the page was
-    /// generated but before it was applied, a narrow race). Other entity
+    /// Applies a pulled page to `LocalStore`. Both `activity_events` and
+    /// `focus_sessions` are fully applied (upserts + tombstones), tombstones
+    /// after upserts so an id that is both upserted and tombstoned within
+    /// the same page ends deleted. `focus_sessions` upserts are applied via
+    /// `LocalStore.upsertSession` — blind overwrite, since `LocalStore` has
+    /// no fetch-by-id to LWW-compare against the incoming `updated_at` (the
+    /// server has already resolved LWW before this page was produced, so
+    /// this only matters for a local edit made after the page was generated
+    /// but before it was applied, a narrow race). Other entity
     /// types (`projects`, `tags`, `user_app_settings`, `aggregates`) have no
     /// local storage yet, so they are decoded but intentionally not applied
     /// here — extending `LocalStore` for them is out of RIZ-41's scope.
@@ -168,6 +170,12 @@ struct SyncEngine {
         if let focusSessions = changes.focusSessions {
             for upsert in focusSessions.upserts {
                 try await localStore.upsertSession(Self.makeFocusSession(from: upsert))
+            }
+            for tombstone in focusSessions.tombstones {
+                guard let recordID = tombstone.recordID else {
+                    continue
+                }
+                try await localStore.tombstoneSession(id: recordID, at: clock.now())
             }
         }
     }

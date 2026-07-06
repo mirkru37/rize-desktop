@@ -130,6 +130,30 @@ final class GRDBLocalStoreTests: XCTestCase {
         XCTAssertEqual(fetched?.status, .completed)
     }
 
+    func testTombstoneSessionSetsDeletedAt() async throws {
+        let store = makeStore()
+        let session = FocusSession(
+            id: UUID(),
+            kind: .focus,
+            startedAt: referenceNow,
+            status: .running,
+            createdAt: referenceNow,
+            updatedAt: referenceNow
+        )
+        try await store.upsertSession(session)
+
+        try await store.tombstoneSession(id: session.id, at: referenceNow.addingTimeInterval(60))
+
+        let fetched = try await dbQueue.read { db in try FocusSession.fetchOne(db, key: session.id) }
+        XCTAssertEqual(fetched?.deletedAt, referenceNow.addingTimeInterval(60))
+    }
+
+    func testTombstoneSessionIsNoOpForUnknownId() async throws {
+        let store = makeStore()
+        // Should not throw even though no row exists for this id.
+        try await store.tombstoneSession(id: UUID(), at: referenceNow)
+    }
+
     // MARK: - Today's activity
 
     func testFetchTodayActivityExcludesEventsFromOtherDays() async throws {

@@ -27,6 +27,14 @@ protocol LocalStore: Sendable {
     /// Inserts or updates a focus/manual session, keyed by `id`.
     func upsertSession(_ session: FocusSession) async throws
 
+    /// Soft-deletes a focus/manual session by stamping its `deletedAt`, per
+    /// the server's `deleted_at` tombstone convention for mutable entities.
+    /// No-ops if the session does not exist locally. Desktop has no
+    /// `focus_session` outbox, so unlike `tombstoneEvent` there is nothing to
+    /// re-queue for push here — this only applies a tombstone pulled from
+    /// the server.
+    func tombstoneSession(id: UUID, at date: Date) async throws
+
     /// Returns all non-deleted activity events whose `startedAt` falls
     /// within "today", as defined by the store's injected clock/calendar.
     func fetchTodayActivity() async throws -> [ActivityEvent]

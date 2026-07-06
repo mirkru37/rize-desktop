@@ -44,6 +44,16 @@ final class GRDBLocalStore: LocalStore {
         }
     }
 
+    func tombstoneSession(id: UUID, at date: Date) async throws {
+        try await dbWriter.write { db in
+            guard var session = try FocusSession.fetchOne(db, key: id) else {
+                return
+            }
+            session.deletedAt = date
+            try session.save(db)
+        }
+    }
+
     func fetchTodayActivity() async throws -> [ActivityEvent] {
         let now = clock.now()
         let startOfDay = calendar.startOfDay(for: now)
