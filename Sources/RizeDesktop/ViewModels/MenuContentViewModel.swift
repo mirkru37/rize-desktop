@@ -32,15 +32,30 @@ final class MenuContentViewModel {
         permissionState == .denied
     }
 
+    /// The auth/sync-status facades for the menu's sign-in sheet and sync
+    /// status row (RIZ-41). `nil` in contexts that don't wire up sync (e.g.
+    /// existing previews/tests predating RIZ-41), in which case the menu
+    /// simply omits that UI.
+    let authSession: AuthSessionViewModel?
+    let syncStatus: SyncStatusViewModel?
+
     private let store: LocalStore
     private let engine: TrackingEngineControlling
     private let topAppsLimit: Int
     private var refreshTask: Task<Void, Never>?
 
-    init(store: LocalStore, engine: TrackingEngineControlling, topAppsLimit: Int = 3) {
+    init(
+        store: LocalStore,
+        engine: TrackingEngineControlling,
+        topAppsLimit: Int = 3,
+        authSession: AuthSessionViewModel? = nil,
+        syncStatus: SyncStatusViewModel? = nil
+    ) {
         self.store = store
         self.engine = engine
         self.topAppsLimit = topAppsLimit
+        self.authSession = authSession
+        self.syncStatus = syncStatus
     }
 
     /// Re-reads today's activity from the store and the engine's live state,

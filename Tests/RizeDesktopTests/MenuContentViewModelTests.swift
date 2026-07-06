@@ -23,6 +23,7 @@ final class MenuContentViewModelTests: XCTestCase {
         func writeEvent(_ event: ActivityEvent) async throws {}
         func tombstoneEvent(id: UUID, at date: Date) async throws {}
         func upsertSession(_ session: FocusSession) async throws {}
+        func tombstoneSession(id: UUID, at date: Date) async throws {}
 
         func fetchTodayActivity() async throws -> [ActivityEvent] {
             fetchTodayActivityCallCount += 1

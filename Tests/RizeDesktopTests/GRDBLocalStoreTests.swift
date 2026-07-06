@@ -130,6 +130,30 @@ final class GRDBLocalStoreTests: XCTestCase {
         XCTAssertEqual(fetched?.status, .completed)
     }
 
+    func testTombstoneSessionSetsDeletedAt() async throws {
+        let store = makeStore()
+        let session = FocusSession(
+            id: UUID(),
+            kind: .focus,
+            startedAt: referenceNow,
+            status: .running,
+            createdAt: referenceNow,
+            updatedAt: referenceNow
+        )
+        try await store.upsertSession(session)
+
+        try await store.tombstoneSession(id: session.id, at: referenceNow.addingTimeInterval(60))
+
+        let fetched = try await dbQueue.read { db in try FocusSession.fetchOne(db, key: session.id) }
+        XCTAssertEqual(fetched?.deletedAt, referenceNow.addingTimeInterval(60))
+    }
+
+    func testTombstoneSessionIsNoOpForUnknownId() async throws {
+        let store = makeStore()
+        // Should not throw even though no row exists for this id.
+        try await store.tombstoneSession(id: UUID(), at: referenceNow)
+    }
+
     // MARK: - Today's activity
 
     func testFetchTodayActivityExcludesEventsFromOtherDays() async throws {
@@ -257,5 +281,63 @@ final class GRDBLocalStoreTests: XCTestCase {
         let store = makeStore()
         // Should not throw even though no row exists for this id.
         try await store.tombstoneEvent(id: UUID(), at: referenceNow)
+    }
+
+    // MARK: - Guarded mark-synced (RIZ-41)
+
+    /// The common, happy-path case: nothing mutated the row between the
+    /// batch being fetched and the push result coming back, so the snapshot
+    /// still matches and the row is marked synced.
+    func testMarkEventsSyncedMatchingStampsRowsWhoseSnapshotStillMatches() async throws {
+        let store = makeStore()
+        let event = makeEvent(startedAt: referenceNow.addingTimeInterval(-60), endedAt: referenceNow)
+        try await store.writeEvent(event)
+
+        try await store.markEventsSynced(
+            matching: [SyncedRowSnapshot(eventID: event.eventID, deleted: false)],
+            syncedAt: referenceNow
+        )
+
+        let remaining = try await store.fetchUnsyncedEvents(limit: 500)
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    /// RIZ-38 review M1: if a row is tombstoned locally after its
+    /// (pre-tombstone) push was already in flight, the snapshot captured at
+    /// fetch time (`deleted: false`) no longer matches the row's current
+    /// state (`deleted: true`) by the time the push result comes back. The
+    /// guard must leave it pending so the tombstone itself gets pushed on
+    /// the next cycle, rather than dropping it from the outbox.
+    func testMarkEventsSyncedMatchingSkipsRowsTombstonedSinceTheSnapshotWasCaptured() async throws {
+        let store = makeStore()
+        let event = makeEvent(startedAt: referenceNow.addingTimeInterval(-60), endedAt: referenceNow)
+        try await store.writeEvent(event)
+        let snapshot = SyncedRowSnapshot(event: event)
+
+        // Mutates the row after the snapshot was captured but before the
+        // guarded mark-synced call — simulating a tombstone racing a push.
+        try await store.tombstoneEvent(id: event.eventID, at: referenceNow)
+
+        try await store.markEventsSynced(matching: [snapshot], syncedAt: referenceNow)
+
+        let remaining = try await store.fetchUnsyncedEvents(limit: 500)
+        XCTAssertEqual(remaining.map(\.eventID), [event.eventID], "the tombstone must still be pending sync")
+        let fetched = try await dbQueue.read { db in try ActivityEvent.fetchOne(db, key: event.eventID) }
+        XCTAssertEqual(fetched?.deleted, true)
+        XCTAssertNil(fetched?.syncedAt, "syncedAt must not be stamped once the row has moved on from the snapshot")
+    }
+
+    func testMarkEventsSyncedMatchingIgnoresUnknownIds() async throws {
+        let store = makeStore()
+        // Should not throw even though no row exists for this id.
+        try await store.markEventsSynced(
+            matching: [SyncedRowSnapshot(eventID: UUID(), deleted: false)],
+            syncedAt: referenceNow
+        )
+    }
+
+    func testMarkEventsSyncedMatchingIsNoOpForEmptySnapshotList() async throws {
+        let store = makeStore()
+        try await store.markEventsSynced(matching: [], syncedAt: referenceNow)
     }
 }

@@ -39,6 +39,7 @@ final class TrackingEngineTests: XCTestCase {
 
         func tombstoneEvent(id: UUID, at date: Date) async throws {}
         func upsertSession(_ session: FocusSession) async throws {}
+        func tombstoneSession(id: UUID, at date: Date) async throws {}
         func fetchTodayActivity() async throws -> [ActivityEvent] {
             writtenEvents
         }

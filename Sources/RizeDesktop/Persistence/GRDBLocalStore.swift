@@ -44,6 +44,16 @@ final class GRDBLocalStore: LocalStore {
         }
     }
 
+    func tombstoneSession(id: UUID, at date: Date) async throws {
+        try await dbWriter.write { db in
+            guard var session = try FocusSession.fetchOne(db, key: id) else {
+                return
+            }
+            session.deletedAt = date
+            try session.save(db)
+        }
+    }
+
     func fetchTodayActivity() async throws -> [ActivityEvent] {
         let now = clock.now()
         let startOfDay = calendar.startOfDay(for: now)
@@ -81,6 +91,21 @@ final class GRDBLocalStore: LocalStore {
             _ = try ActivityEvent
                 .filter(keys: ids)
                 .updateAll(db, Column("syncedAt").set(to: date))
+        }
+    }
+
+    func markEventsSynced(matching snapshots: [SyncedRowSnapshot], syncedAt date: Date) async throws {
+        guard !snapshots.isEmpty else {
+            return
+        }
+
+        try await dbWriter.write { db in
+            for snapshot in snapshots {
+                _ = try ActivityEvent
+                    .filter(Column("eventID") == snapshot.eventID)
+                    .filter(Column("deleted") == snapshot.deleted)
+                    .updateAll(db, Column("syncedAt").set(to: date))
+            }
         }
     }
 }
