@@ -57,8 +57,8 @@ final class LocalStoreTests: XCTestCase {
             endedAt: Date(timeIntervalSince1970: 1_800_000_060),
             type: .appActive,
             appBundleID: "com.acme.Editor",
-            insertedAt: Date(timeIntervalSince1970: 1_800_000_060),
-            deleted: true
+            deleted: true,
+            insertedAt: Date(timeIntervalSince1970: 1_800_000_060)
         )
 
         let snapshot = SyncedRowSnapshot(event: event)
