@@ -57,19 +57,28 @@ final class TrackingEngineTests: XCTestCase {
     /// A `LocalStore` whose `writeEvent` suspends until the test explicitly
     /// opens the gate, used to reproduce actor reentrancy during
     /// persistence (RIZ-39 review, finding H1/M5). Every `writeEvent` call
-    /// suspends independently until the gate is opened, after which future
-    /// calls pass straight through.
+    /// suspends independently until the gate is opened — each suspension is
+    /// its own continuation appended to `gateWaiters`, so multiple
+    /// concurrent writes (e.g. the Terminal close and the reentrant Safari
+    /// close) are never lost or overwritten — after which future calls pass
+    /// straight through.
+    ///
+    /// `onEntry` fires every time a `writeEvent` call reaches the gate,
+    /// letting the test drive an `XCTestExpectation` per entry instead of a
+    /// bespoke continuation-based "has entered" signal — that first version
+    /// deadlocked the test itself (see the test's doc comment), and an
+    /// expectation-based, timeout-bounded wait can't hang the suite even if
+    /// a future change to this fake breaks the assumed entry count.
     private actor SuspendableLocalStore: LocalStore {
         private(set) var writtenEvents: [ActivityEvent] = []
         private var isGateOpen = false
         private var gateWaiters: [CheckedContinuation<Void, Never>] = []
-        private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+        private var onEntry: (@Sendable (Int) -> Void)?
         private var entryCount = 0
 
         func writeEvent(_ event: ActivityEvent) async throws {
             entryCount += 1
-            entryWaiters.forEach { $0.resume() }
-            entryWaiters.removeAll()
+            onEntry?(entryCount)
             if !isGateOpen {
                 await withCheckedContinuation { continuation in
                     gateWaiters.append(continuation)
@@ -90,17 +99,10 @@ final class TrackingEngineTests: XCTestCase {
 
         func markEventsSynced(ids: [UUID], syncedAt date: Date) async throws {}
 
-        /// Suspends until at least one `writeEvent` call has entered
-        /// (reached this method), so the test can be certain the engine is
-        /// actually suspended mid-persistence before delivering a
-        /// competing signal.
-        func waitForFirstEntry() async {
-            guard entryCount == 0 else {
-                return
-            }
-            await withCheckedContinuation { continuation in
-                entryWaiters.append(continuation)
-            }
+        /// Registers a callback invoked (with the running entry count)
+        /// every time a `writeEvent` call reaches the gate.
+        func setOnEntry(_ handler: @escaping @Sendable (Int) -> Void) {
+            onEntry = handler
         }
 
         /// Releases every `writeEvent` call currently suspended, and lets
@@ -258,10 +260,21 @@ final class TrackingEngineTests: XCTestCase {
 
     // MARK: - Reentrancy (H1 / M5)
 
+    /// Regression test for RIZ-39 review finding H1: a competing signal
+    /// arriving while a previous segment's write is still suspended must
+    /// not have its own segment overwritten once that write resumes.
+    ///
+    /// The Mail switch below closes the Safari segment, which itself
+    /// persists through the same gated store — so it must run as its own
+    /// `Task` and be waited on via a bounded `XCTestExpectation`, exactly
+    /// like the Terminal->Safari switch. An earlier version of this test
+    /// awaited the Mail switch directly on the test's own task before
+    /// opening the gate; because that switch's own persistence suspends on
+    /// the same gate, the test deadlocked itself and hung CI's `Test` step
+    /// for the full timeout (RIZ-39 review follow-up). Every wait here is
+    /// timeout-bounded so a wrong assumption about entry counts fails fast
+    /// instead of hanging again.
     func testReentrantAppSwitchDuringPersistenceDoesNotClobberSegments() async {
-        // Regression test for RIZ-39 review finding H1: a competing signal
-        // arriving while a previous segment's write is still suspended must
-        // not have its own segment overwritten once that write resumes.
         let suspendableStore = SuspendableLocalStore()
         let engine = TrackingEngine(
             store: suspendableStore,
@@ -270,23 +283,9 @@ final class TrackingEngineTests: XCTestCase {
             minimumEventDuration: 5
         )
 
-        await engine.handleFrontmostAppChanged(bundleID: "com.apple.Terminal")
-        clock.advance(by: 10)
-
-        // Start closing the Terminal segment; its persistence will suspend
-        // until the gate opens.
-        let firstSwitch = Task {
-            await engine.handleFrontmostAppChanged(bundleID: "com.apple.Safari")
-        }
-        await suspendableStore.waitForFirstEntry()
-
-        // Deliver a competing app switch while the first switch's write is
-        // still in flight.
-        clock.advance(by: 8)
-        await engine.handleFrontmostAppChanged(bundleID: "com.apple.Mail")
-
-        await suspendableStore.openGate()
+        let (firstSwitch, secondSwitch) = await triggerReentrantSwitches(engine: engine, store: suspendableStore)
         await firstSwitch.value
+        await secondSwitch.value
 
         // A further switch proves the engine's current segment reflects
         // Mail, not stale data from the suspended Safari close.
@@ -294,6 +293,45 @@ final class TrackingEngineTests: XCTestCase {
         await engine.handleFrontmostAppChanged(bundleID: "com.apple.Finder")
 
         let events = await suspendableStore.writtenEvents
+        assertReentrantSwitchEvents(events)
+    }
+
+    /// Starts closing the Terminal segment (suspended on `store`'s gate),
+    /// then delivers a competing Mail switch while that write is still in
+    /// flight — the Mail switch closes the Safari segment opened by the
+    /// first switch, so it also persists through the gated store and must
+    /// run concurrently rather than being awaited inline. Returns both
+    /// tasks, with the gate already opened, for the caller to await.
+    private func triggerReentrantSwitches(
+        engine: TrackingEngine,
+        store: SuspendableLocalStore
+    ) async -> (Task<Void, Never>, Task<Void, Never>) {
+        let terminalWriteEntered = expectation(description: "Terminal write entered the gate")
+        let safariWriteEntered = expectation(description: "Safari write entered the gate")
+        await store.setOnEntry { count in
+            if count == 1 { terminalWriteEntered.fulfill() }
+            if count == 2 { safariWriteEntered.fulfill() }
+        }
+
+        await engine.handleFrontmostAppChanged(bundleID: "com.apple.Terminal")
+        clock.advance(by: 10)
+
+        let firstSwitch = Task {
+            await engine.handleFrontmostAppChanged(bundleID: "com.apple.Safari")
+        }
+        await fulfillment(of: [terminalWriteEntered], timeout: 5)
+
+        clock.advance(by: 8)
+        let secondSwitch = Task {
+            await engine.handleFrontmostAppChanged(bundleID: "com.apple.Mail")
+        }
+        await fulfillment(of: [safariWriteEntered], timeout: 5)
+
+        await store.openGate()
+        return (firstSwitch, secondSwitch)
+    }
+
+    private func assertReentrantSwitchEvents(_ events: [ActivityEvent]) {
         XCTAssertEqual(
             Set(events.map(\.appBundleID)),
             Set(["com.apple.Terminal", "com.apple.Safari", "com.apple.Mail"])
