@@ -34,3 +34,22 @@ jobs:
 
       - name: SwiftFormat (lint)
         run: swiftformat --lint .
+
+      # Unsigned Release build attached to every PR/push for manual smoke-testing.
+      # Not notarized; Developer ID signing + notarization is a later ticket.
+      - name: Build (Release, unsigned)
+        run: |
+          xcodebuild -project RizeDesktop.xcodeproj -scheme RizeDesktop \
+            -configuration Release CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath build build
+
+      - name: Zip .app
+        run: |
+          APP_PATH="build/Build/Products/Release/RizeDesktop.app"
+          ditto -c -k --keepParent "$APP_PATH" RizeDesktop.zip
+
+      - name: Upload unsigned app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RizeDesktop-unsigned-${{ github.sha }}
+          path: RizeDesktop.zip
