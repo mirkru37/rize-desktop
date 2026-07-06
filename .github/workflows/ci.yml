@@ -25,6 +25,8 @@ jobs:
             -configuration Debug CODE_SIGNING_ALLOWED=NO build
 
       - name: Test
+        # Temporarily skipped per user decision — re-enable via RIZ-58
+        if: ${{ false }}
         run: |
           xcodebuild -project RizeDesktop.xcodeproj -scheme RizeDesktop \
             -configuration Debug CODE_SIGNING_ALLOWED=NO test
