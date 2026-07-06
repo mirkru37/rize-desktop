@@ -11,6 +11,7 @@ final class StubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var statusCode = 200
     nonisolated(unsafe) static var responseBody = Data()
     nonisolated(unsafe) static var requestError: Error?
+    nonisolated(unsafe) static var respondWithNonHTTPResponse = false
     nonisolated(unsafe) static var lastRequest: URLRequest?
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -27,17 +28,30 @@ final class StubURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: error)
             return
         }
-        guard let url = request.url, let response = HTTPURLResponse(
-            url: url,
-            statusCode: Self.statusCode,
-            httpVersion: "HTTP/1.1",
-            headerFields: nil
-        ) else {
+        guard let url = request.url else {
+            return
+        }
+        guard let response = makeResponse(for: url) else {
             return
         }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.responseBody)
         client?.urlProtocolDidFinishLoading(self)
+    }
+
+    /// A plain `URLResponse` (rather than `HTTPURLResponse`) when
+    /// `respondWithNonHTTPResponse` is armed, to drive
+    /// `URLSessionHTTPTransport.send`'s `invalidResponse` guard.
+    private func makeResponse(for url: URL) -> URLResponse? {
+        if Self.respondWithNonHTTPResponse {
+            return URLResponse(url: url, mimeType: nil, expectedContentLength: 0, textEncodingName: nil)
+        }
+        return HTTPURLResponse(
+            url: url,
+            statusCode: Self.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        )
     }
 
     override func stopLoading() {}
@@ -58,6 +72,7 @@ final class HTTPTransportTests: XCTestCase {
         StubURLProtocol.statusCode = 200
         StubURLProtocol.responseBody = Data()
         StubURLProtocol.requestError = nil
+        StubURLProtocol.respondWithNonHTTPResponse = false
         StubURLProtocol.lastRequest = nil
     }
 
@@ -105,6 +120,19 @@ final class HTTPTransportTests: XCTestCase {
 
         XCTAssertEqual(response.statusCode, 201)
         XCTAssertEqual(StubURLProtocol.lastRequest?.httpMethod, "POST")
+    }
+
+    func testSendWithNonHTTPResponseThrowsInvalidResponse() async throws {
+        StubURLProtocol.respondWithNonHTTPResponse = true
+        let transport = URLSessionHTTPTransport(session: session)
+        let request = HTTPRequest(method: .get, path: "/sync/changes")
+
+        do {
+            _ = try await transport.send(request, baseURL: makeBaseURL())
+            XCTFail("expected send to throw")
+        } catch APIError.invalidResponse {
+            // expected
+        }
     }
 
     func testSendPropagatesTransportError() async throws {

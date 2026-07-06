@@ -117,6 +117,21 @@ final class SyncAPIClientTests: XCTestCase {
         XCTAssertFalse(queryNames.contains("cursor"))
     }
 
+    func testFetchChangesWithEmptyStringCursorOmitsCursorQueryItem() async throws {
+        let transport = FakeHTTPTransport()
+        let responseBody = Data("""
+        { "changes": {}, "next_cursor": "", "has_more": false }
+        """.utf8)
+        await transport.setOutcome(.success(HTTPResponse(statusCode: 200, body: responseBody)))
+        let client = makeClient(transport: transport)
+
+        _ = try await client.fetchChanges(cursor: "", limit: 200, accessToken: "access-token-1")
+
+        let request = await transport.lastRequest
+        let queryNames = request?.queryItems.map(\.name) ?? []
+        XCTAssertFalse(queryNames.contains("cursor"))
+    }
+
     func testFetchChangesWithServerErrorThrows() async throws {
         let transport = FakeHTTPTransport()
         try await transport.setOutcome(.success(HTTPResponse(statusCode: 503, body: makeProblemData(status: 503))))

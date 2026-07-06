@@ -22,6 +22,14 @@ final class ActivityAggregationTests: XCTestCase {
         )
     }
 
+    // MARK: - AppUsage
+
+    func testAppUsageIDIsItsBundleID() {
+        let usage = ActivityAggregation.AppUsage(bundleID: "com.acme.Editor", duration: 42)
+
+        XCTAssertEqual(usage.id, "com.acme.Editor")
+    }
+
     // MARK: - summarize
 
     func testSummarizeSumsAppActiveDurationsAndIgnoresOtherTypes() {
