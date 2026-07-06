@@ -9,7 +9,8 @@ on:
 env:
   # RIZ-42: minimum acceptable app-target line coverage, percent. Raise this
   # over time as coverage improves; keep it as the single knob for the gate.
-  COVERAGE_THRESHOLD: 50
+  # RIZ-67: raised from 50 to 80 after closing the first-party coverage gap.
+  COVERAGE_THRESHOLD: 80
 
 jobs:
   build-test-lint:
