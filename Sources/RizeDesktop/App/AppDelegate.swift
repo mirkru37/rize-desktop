@@ -58,7 +58,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func makeContentMenuItem(viewModel: MenuContentViewModel) -> NSMenuItem {
         let hostingView = NSHostingView(rootView: MenuContentView(viewModel: viewModel))
-        hostingView.frame = NSRect(x: 0, y: 0, width: 280, height: hostingView.fittingSize.height)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 280, height: 0)
+        // Let the hosting view track its SwiftUI content's intrinsic size, so
+        // the menu item grows/shrinks as the dashboard's content changes
+        // (top-apps list, onboarding panel) instead of being pinned to a
+        // one-shot `fittingSize` measured before that content settles.
+        hostingView.sizingOptions = [.minSize, .intrinsicContentSize]
 
         let menuItem = NSMenuItem()
         menuItem.view = hostingView
