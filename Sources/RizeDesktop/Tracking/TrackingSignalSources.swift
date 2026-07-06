@@ -43,7 +43,10 @@ struct WindowTitleReading: Equatable {
 /// protocol so segmentation on title changes is testable without a live
 /// Accessibility session.
 protocol WindowTitleSignalSource: Sendable {
-    func currentWindowTitle() -> WindowTitleReading
+    /// `async` because resolving the reading requires reading
+    /// `NSWorkspace.shared.frontmostApplication` on the main actor; the
+    /// polling loop that calls this runs off the main thread.
+    func currentWindowTitle() async -> WindowTitleReading
 }
 
 /// Reports elapsed system idle time, used to drive the `active -> idle`

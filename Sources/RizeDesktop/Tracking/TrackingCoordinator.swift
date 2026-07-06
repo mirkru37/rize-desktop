@@ -86,7 +86,7 @@ final class TrackingCoordinator {
         let isTrusted = permissionSource.isTrusted()
         await engine.handleAccessibilityPermissionChanged(isTrusted: isTrusted)
 
-        let reading = windowTitleSource.currentWindowTitle()
+        let reading = await windowTitleSource.currentWindowTitle()
         await engine.handleWindowTitleObserved(reading.title)
     }
 }

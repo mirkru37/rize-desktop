@@ -39,18 +39,25 @@ final class NSWorkspaceFrontmostAppSource: FrontmostAppSignalSource {
 /// unavailable, per `documentation/architecture-desktop.md` §Tracking
 /// Pipeline and §Permissions & Entitlements.
 final class AccessibilityWindowTitleSource: WindowTitleSignalSource {
-    func currentWindowTitle() -> WindowTitleReading {
+    func currentWindowTitle() async -> WindowTitleReading {
         guard AXIsProcessTrusted() else {
-            return cgWindowListFallback()
+            return await cgWindowListFallback()
         }
-        guard let title = axFocusedWindowTitle() else {
-            return cgWindowListFallback()
+        guard let title = await axFocusedWindowTitle() else {
+            return await cgWindowListFallback()
         }
         return WindowTitleReading(title: title, path: .accessibility)
     }
 
-    private func axFocusedWindowTitle() -> String? {
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+    /// `NSWorkspace.shared.frontmostApplication` is main-thread-affined;
+    /// this poller runs off the main thread, so the read is hopped over.
+    @MainActor
+    private func frontmostApplication() -> NSRunningApplication? {
+        NSWorkspace.shared.frontmostApplication
+    }
+
+    private func axFocusedWindowTitle() async -> String? {
+        guard let frontApp = await frontmostApplication() else {
             return nil
         }
         let axApp = AXUIElementCreateApplication(frontApp.processIdentifier)
@@ -74,8 +81,8 @@ final class AccessibilityWindowTitleSource: WindowTitleSignalSource {
         return titleRef as? String
     }
 
-    private func cgWindowListFallback() -> WindowTitleReading {
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+    private func cgWindowListFallback() async -> WindowTitleReading {
+        guard let frontApp = await frontmostApplication() else {
             return WindowTitleReading(title: nil, path: .unavailable)
         }
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
