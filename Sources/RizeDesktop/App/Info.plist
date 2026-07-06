@@ -22,5 +22,7 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © RizeClone.</string>
+	<key>RIZE_BACKEND_BASE_URL</key>
+	<string>$(RIZE_BACKEND_BASE_URL)</string>
 </dict>
 </plist>

@@ -5,6 +5,13 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
 
+# RIZ-55: base xcconfig applied to every configuration. Config.example.xcconfig
+# is committed with safe defaults (see that file for how to override values
+# locally via a gitignored Config.local.xcconfig without editing this file).
+configFiles:
+  Debug: Config.example.xcconfig
+  Release: Config.example.xcconfig
+
 settings:
   base:
     SWIFT_VERSION: "5.10"
@@ -41,6 +48,7 @@ targets:
         CFBundleVersion: "1"
         LSUIElement: true
         NSHumanReadableCopyright: "Copyright © RizeClone."
+        RIZE_BACKEND_BASE_URL: "$(RIZE_BACKEND_BASE_URL)"
 
   RizeDesktopTests:
     type: bundle.unit-test
