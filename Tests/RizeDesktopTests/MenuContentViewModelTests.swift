@@ -14,6 +14,7 @@ final class MenuContentViewModelTests: XCTestCase {
     private actor StubLocalStore: LocalStore {
         var events: [ActivityEvent] = []
         var fetchError: Error?
+        private(set) var fetchTodayActivityCallCount = 0
 
         init(events: [ActivityEvent] = []) {
             self.events = events
@@ -24,6 +25,7 @@ final class MenuContentViewModelTests: XCTestCase {
         func upsertSession(_ session: FocusSession) async throws {}
 
         func fetchTodayActivity() async throws -> [ActivityEvent] {
+            fetchTodayActivityCallCount += 1
             if let fetchError {
                 throw fetchError
             }
@@ -83,6 +85,17 @@ final class MenuContentViewModelTests: XCTestCase {
     private struct StubFetchError: Error {}
 
     private let referenceDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// Deterministically drains the cooperative scheduler so an unstructured
+    /// `Task` started elsewhere (e.g. by `startAutoRefresh()`) gets to run
+    /// its work — no wall-clock `Task.sleep`, so no CI flakiness. The loop
+    /// bound is generous but finite: each `Task.yield()` gives every other
+    /// runnable task on the executor a turn.
+    private func megaYield(count: Int = 20) async {
+        for _ in 0 ..< count {
+            await Task.yield()
+        }
+    }
 
     private func makeAppActiveEvent(appBundleID: String, durationSeconds: TimeInterval) -> ActivityEvent {
         ActivityEvent(
@@ -251,5 +264,51 @@ final class MenuContentViewModelTests: XCTestCase {
         await viewModel.refresh()
 
         XCTAssertTrue(viewModel.showsAccessibilityOnboarding)
+    }
+
+    // MARK: - Refresh-loop lifecycle
+
+    /// `startAutoRefresh()` runs an immediate `refresh()` before its first
+    /// sleep. A very long interval keeps the loop parked in
+    /// `Task.sleep(for:)` after that first pass for the rest of the test, so
+    /// draining the scheduler with `megaYield()` observes exactly the one
+    /// immediate refresh deterministically, without waiting on real time.
+    func testStartAutoRefreshPerformsAnImmediateRefresh() async {
+        let event = makeAppActiveEvent(appBundleID: "com.acme.Editor", durationSeconds: 120)
+        let store = StubLocalStore(events: [event])
+        let viewModel = MenuContentViewModel(store: store, engine: StubEngine())
+
+        await viewModel.startAutoRefresh(interval: .seconds(3600))
+        await megaYield()
+
+        XCTAssertEqual(viewModel.totalTrackedTimeText, "2m")
+        let callCount = await store.fetchTodayActivityCallCount
+        XCTAssertEqual(callCount, 1)
+
+        await viewModel.stopAutoRefresh()
+    }
+
+    /// `stopAutoRefresh()` cancels the loop's `Task` while it's parked in
+    /// `Task.sleep(for:)`: cancellation makes the sleep throw, and the
+    /// `while !Task.isCancelled` check then exits the loop before it can
+    /// perform another `refresh()`. Draining the scheduler again after
+    /// stopping and asserting the store's call count is unchanged is an
+    /// observable proxy for "no further mutations" — `refreshTask` itself is
+    /// a private implementation detail not exposed to tests.
+    func testStopAutoRefreshCancelsTheLoopAndPreventsFurtherRefreshes() async {
+        let event = makeAppActiveEvent(appBundleID: "com.acme.Editor", durationSeconds: 120)
+        let store = StubLocalStore(events: [event])
+        let viewModel = MenuContentViewModel(store: store, engine: StubEngine())
+
+        await viewModel.startAutoRefresh(interval: .seconds(3600))
+        await megaYield()
+        let callCountAfterStart = await store.fetchTodayActivityCallCount
+        XCTAssertEqual(callCountAfterStart, 1)
+
+        await viewModel.stopAutoRefresh()
+        await megaYield()
+
+        let callCountAfterStop = await store.fetchTodayActivityCallCount
+        XCTAssertEqual(callCountAfterStop, 1)
     }
 }
