@@ -5,8 +5,8 @@ import XCTest
 
 /// Thread-safe sink for signals collected off a `Task` consuming an
 /// `AsyncStream` — the `OSTrackingSignalSourcesTests` suite needs this
-/// because the real `NotificationCenter`/`DistributedNotificationCenter`
-/// observer callbacks can run on threads other than the test method's.
+/// because the real `NotificationCenter` observer callbacks can run on
+/// threads other than the test method's.
 private actor SignalSink<Signal: Sendable> {
     private(set) var received: [Signal] = []
 
@@ -15,33 +15,38 @@ private actor SignalSink<Signal: Sendable> {
     }
 }
 
-/// Exercises the real, OS-backed signal sources against the actual
-/// `NotificationCenter`/`DistributedNotificationCenter` instances they
-/// observe — no fakes, since these types exist specifically to wrap those
-/// real APIs — per `documentation/architecture-desktop.md` §Tracking
-/// Pipeline. Every wait is bounded via `fulfillment(of:timeout:)`, per the
-/// RIZ-67 brief's "no unbounded waits" rule: if a notification somehow
-/// never arrives in a given CI sandbox, the test fails fast at the timeout
-/// instead of hanging.
+/// Exercises the real, OS-backed signal sources against real
+/// `NotificationCenter` instances — no fakes, since these types exist
+/// specifically to wrap those real APIs — per
+/// `documentation/architecture-desktop.md` §Tracking Pipeline.
+///
+/// Every wait is bounded via `fulfillment(of:timeout:)`, per the RIZ-67
+/// brief's "no unbounded waits" rule. Every stream is constructed (`let
+/// stream = source.events()`) *before* the consumer `Task` is created and
+/// *before* anything is posted: `AsyncStream`'s `build` closure — which is
+/// where these sources register their observers — runs synchronously the
+/// moment `events()` is called, so hoisting that call out of the `Task`
+/// guarantees registration happens-before the first post, regardless of
+/// when the `Task` itself gets scheduled to run. Posting before that
+/// registration is exactly the subscription race that made an earlier
+/// version of this suite flaky.
 final class OSTrackingSignalSourcesTests: XCTestCase {
     // MARK: - NSWorkspaceFrontmostAppSource
 
-    func testEventsSeedsCurrentFrontmostAppAndYieldsOnActivation() async throws {
+    func testEventsSeedsCurrentFrontmostAppAndYieldsOnActivation() async {
         let source = NSWorkspaceFrontmostAppSource()
+        let stream = source.events()
         let sink = SignalSink<FrontmostAppSample>()
         let activatedExpectation = expectation(description: "activation sample received")
         let activatedApp = NSRunningApplication.current
 
         let consumerTask = Task {
-            for await sample in source.events() {
+            for await sample in stream {
                 await sink.record(sample)
                 let receivedCount = await sink.received.count
                 if receivedCount == 2 { activatedExpectation.fulfill() }
             }
         }
-        // Give the stream's seed value a moment to land before activating,
-        // so the two samples arrive in a known order.
-        try await Task.sleep(for: .milliseconds(50))
 
         NSWorkspace.shared.notificationCenter.post(
             name: NSWorkspace.didActivateApplicationNotification,
@@ -57,19 +62,19 @@ final class OSTrackingSignalSourcesTests: XCTestCase {
         XCTAssertEqual(received.last?.bundleID, activatedApp.bundleIdentifier)
     }
 
-    func testEventsYieldsANilBundleIDWhenActivationNotificationCarriesNoApp() async throws {
+    func testEventsYieldsANilBundleIDWhenActivationNotificationCarriesNoApp() async {
         let source = NSWorkspaceFrontmostAppSource()
+        let stream = source.events()
         let sink = SignalSink<FrontmostAppSample>()
         let noAppExpectation = expectation(description: "sample with no app received")
 
         let consumerTask = Task {
-            for await sample in source.events() {
+            for await sample in stream {
                 await sink.record(sample)
                 let receivedCount = await sink.received.count
                 if receivedCount == 2 { noAppExpectation.fulfill() }
             }
         }
-        try await Task.sleep(for: .milliseconds(50))
 
         NSWorkspace.shared.notificationCenter.post(
             name: NSWorkspace.didActivateApplicationNotification,
@@ -87,36 +92,34 @@ final class OSTrackingSignalSourcesTests: XCTestCase {
     // MARK: - SystemStateNotificationSource
 
     func testEventsYieldsOnScreenLockAndUnlockNotifications() async {
-        let source = SystemStateNotificationSource()
+        // Plain, test-local `NotificationCenter` instances injected in
+        // place of the real `DistributedNotificationCenter`/`NSWorkspace`
+        // centers: same in-process, synchronous (`queue: nil`) delivery
+        // semantics, without depending on the real distributed-notification
+        // daemon, which can be unreliable/sandboxed on a CI runner.
+        let distributedCenter = NotificationCenter()
+        let workspaceCenter = NotificationCenter()
+        let source = SystemStateNotificationSource(
+            distributedCenter: distributedCenter,
+            workspaceCenter: workspaceCenter
+        )
+        let stream = source.events()
         let sink = SignalSink<SystemStateSignal>()
         let lockedExpectation = expectation(description: "screenLocked received")
         let unlockedExpectation = expectation(description: "screenUnlocked received")
 
         let consumerTask = Task {
-            for await signal in source.events() {
+            for await signal in stream {
                 await sink.record(signal)
                 if signal == .screenLocked { lockedExpectation.fulfill() }
                 if signal == .screenUnlocked { unlockedExpectation.fulfill() }
             }
         }
 
-        // `deliverImmediately: true` avoids relying on the distributed
-        // notification daemon's default suspension/coalescing behavior, so
-        // the same-process observer above receives it promptly.
-        DistributedNotificationCenter.default().postNotificationName(
-            Notification.Name("com.apple.screenIsLocked"),
-            object: nil,
-            userInfo: nil,
-            deliverImmediately: true
-        )
+        distributedCenter.post(name: Notification.Name("com.apple.screenIsLocked"), object: nil)
         await fulfillment(of: [lockedExpectation], timeout: 5)
 
-        DistributedNotificationCenter.default().postNotificationName(
-            Notification.Name("com.apple.screenIsUnlocked"),
-            object: nil,
-            userInfo: nil,
-            deliverImmediately: true
-        )
+        distributedCenter.post(name: Notification.Name("com.apple.screenIsUnlocked"), object: nil)
         await fulfillment(of: [unlockedExpectation], timeout: 5)
         consumerTask.cancel()
 
@@ -125,23 +128,29 @@ final class OSTrackingSignalSourcesTests: XCTestCase {
     }
 
     func testEventsYieldsOnWillSleepAndDidWakeNotifications() async {
-        let source = SystemStateNotificationSource()
+        let distributedCenter = NotificationCenter()
+        let workspaceCenter = NotificationCenter()
+        let source = SystemStateNotificationSource(
+            distributedCenter: distributedCenter,
+            workspaceCenter: workspaceCenter
+        )
+        let stream = source.events()
         let sink = SignalSink<SystemStateSignal>()
         let sleepExpectation = expectation(description: "willSleep received")
         let wakeExpectation = expectation(description: "didWake received")
 
         let consumerTask = Task {
-            for await signal in source.events() {
+            for await signal in stream {
                 await sink.record(signal)
                 if signal == .willSleep { sleepExpectation.fulfill() }
                 if signal == .didWake { wakeExpectation.fulfill() }
             }
         }
 
-        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        workspaceCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
         await fulfillment(of: [sleepExpectation], timeout: 5)
 
-        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
+        workspaceCenter.post(name: NSWorkspace.didWakeNotification, object: nil)
         await fulfillment(of: [wakeExpectation], timeout: 5)
         consumerTask.cancel()
 
