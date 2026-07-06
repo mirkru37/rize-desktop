@@ -4,6 +4,13 @@ import SwiftUI
 /// Owns the `NSStatusItem` menu-bar shell. `MenuBarExtra` is intentionally not
 /// used here — see `documentation/system-overview.md` for the rationale
 /// (AppKit's `NSStatusItem` gives full control over the menu-bar item).
+///
+/// `@MainActor`-isolated: AppKit already invokes every delegate callback here
+/// (`applicationDidFinishLaunching`, `menuWillOpen`/`menuDidClose`) on the
+/// main thread, and this annotation lets the compiler enforce it — which is
+/// also what makes constructing the `@MainActor`-isolated
+/// `MenuContentViewModel` in `configureStatusItem(tracking:)` valid.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var trackingEngine: TrackingEngine?

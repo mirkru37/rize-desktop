@@ -9,8 +9,11 @@ import Observation
 ///
 /// Depends only on `LocalStore` and `TrackingEngineControlling` — both
 /// protocols — so it is exercised in tests with stubs rather than the real
-/// GRDB store and the tracking actor. Intended for use from the main thread,
-/// same as the `MenuContentView` it backs.
+/// GRDB store and the tracking actor. `@MainActor`-isolated so its
+/// `@Observable` properties are only ever mutated on the main actor — the
+/// same actor `MenuContentView` reads them from — even though `refresh()`
+/// awaits off-actor work on `store`/`engine` in between.
+@MainActor
 @Observable
 final class MenuContentViewModel {
     private(set) var totalTrackedTimeText = ActivityAggregation.formatDuration(0)
