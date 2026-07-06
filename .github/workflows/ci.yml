@@ -6,9 +6,24 @@ on:
     branches:
       - main
 
+env:
+  # RIZ-42: minimum acceptable app-target line coverage, percent. Raise this
+  # over time as coverage improves; keep it as the single knob for the gate.
+  COVERAGE_THRESHOLD: 50
+
 jobs:
   build-test-lint:
     runs-on: macos-15
+    # RIZ-58: Test step (and everything downstream of it: the coverage gate
+    # and its reports) is temporarily skipped per user decision — GitHub
+    # Actions billing is blocked and desktop test runs previously hung
+    # runners. Flip this single flag to "true" to re-enable the Test step
+    # and all coverage machinery together.
+    env:
+      RIZ_58_TESTS_ENABLED: "false"
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,11 +40,49 @@ jobs:
             -configuration Debug CODE_SIGNING_ALLOWED=NO build
 
       - name: Test
-        # Temporarily skipped per user decision — re-enable via RIZ-58
-        if: ${{ false }}
+        # RIZ-58: temporarily skipped per user decision — re-enable by
+        # flipping RIZ_58_TESTS_ENABLED to "true" above.
+        if: ${{ env.RIZ_58_TESTS_ENABLED == 'true' }}
         run: |
+          rm -rf TestResults.xcresult
           xcodebuild -project RizeDesktop.xcodeproj -scheme RizeDesktop \
-            -configuration Debug CODE_SIGNING_ALLOWED=NO test
+            -configuration Debug CODE_SIGNING_ALLOWED=NO \
+            -enableCodeCoverage YES -resultBundlePath TestResults.xcresult \
+            test
+
+      - name: Coverage gate
+        # RIZ-58: gated with the Test step above; see RIZ_58_TESTS_ENABLED.
+        if: ${{ env.RIZ_58_TESTS_ENABLED == 'true' }}
+        run: scripts/coverage-check.sh TestResults.xcresult
+
+      - name: Append coverage summary
+        # RIZ-58: gated with the Test step above; runs even if the coverage
+        # gate step fails so the summary still shows why.
+        if: ${{ always() && env.RIZ_58_TESTS_ENABLED == 'true' }}
+        run: |
+          if [ -f coverage-summary.txt ]; then
+            cat coverage-summary.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage reports
+        # RIZ-58: gated with the Test step above.
+        if: ${{ always() && env.RIZ_58_TESTS_ENABLED == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports-${{ github.sha }}
+          path: |
+            coverage-report.txt
+            coverage-report.json
+          if-no-files-found: warn
+
+      - name: Post coverage summary on PR
+        # RIZ-58: gated with the Test step above.
+        if: ${{ always() && env.RIZ_58_TESTS_ENABLED == 'true' && github.event_name == 'pull_request' }}
+        continue-on-error: true
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: coverage-report
+          path: coverage-summary.txt
 
       - name: SwiftLint
         run: swiftlint --strict
