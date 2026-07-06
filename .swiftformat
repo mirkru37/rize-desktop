@@ -20,6 +20,7 @@
 --self remove
 --semicolons inline-only
 --stripunusedargs closure-only
+--trailing-commas never
 --trimwhitespace always
 --voidtype void
 --wrapternary before-operators
