@@ -98,7 +98,7 @@ actor AuthTokenManager {
     }
 
     private func performRefresh() async throws -> String {
-        guard let refreshToken = (try? storage.refreshToken()) ?? nil else {
+        guard let refreshToken = try? storage.refreshToken() else {
             clearLocalState()
             throw AuthError.notAuthenticated
         }

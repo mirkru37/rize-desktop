@@ -8,6 +8,11 @@ import XCTest
 /// `documentation/architecture-desktop.md` §Offline-First Store & Sync Loop.
 /// Using the real store (rather than a hand-rolled fake) is what lets these
 /// tests exercise the actual guarded mark-synced query end to end.
+///
+/// Covers push: batching/cap, per-item result application, nil-deviceID
+/// exclusion, and idempotent retry. Pull coverage (upserts, tombstones,
+/// cursor persistence, paging) lives in `SyncEnginePullTests` in this same
+/// file — split out to keep each type under SwiftLint's `type_body_length`.
 final class SyncEngineTests: XCTestCase {
     private var dbQueue: DatabaseQueue!
     private var referenceNow: Date!
@@ -217,6 +222,72 @@ final class SyncEngineTests: XCTestCase {
 
         let rowCount = try await dbQueue.read { db in try ActivityEvent.fetchCount(db) }
         XCTAssertEqual(rowCount, 1, "a retried push must never duplicate the local row")
+    }
+}
+
+/// Pull-side coverage for `SyncEngine.runCycle()`: upserts, tombstones,
+/// cursor persistence, and paging. Split out of `SyncEngineTests` (which
+/// covers push) purely to stay under SwiftLint's `type_body_length` limit —
+/// same fixtures, same real `GRDBLocalStore`/`FakeSyncAPIClient` setup.
+final class SyncEnginePullTests: XCTestCase {
+    private var dbQueue: DatabaseQueue!
+    private var referenceNow: Date!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        dbQueue = try DatabaseQueue()
+        try DatabaseMigrations.makeMigrator().migrate(dbQueue)
+        referenceNow = Date(timeIntervalSince1970: 1_800_000_000)
+    }
+
+    override func tearDown() {
+        dbQueue = nil
+        referenceNow = nil
+        super.tearDown()
+    }
+
+    private func makeStore() -> GRDBLocalStore {
+        GRDBLocalStore(dbWriter: dbQueue, clock: FixedTestClock(date: referenceNow))
+    }
+
+    private func makeEngine(
+        store: LocalStore,
+        syncAPI: SyncAPIClient,
+        cursorStore: SyncCursorStore = InMemorySyncCursorStore(),
+        deviceID: UUID? = UUID()
+    ) async -> SyncEngine {
+        let authAPI = FakeAuthAPIClient()
+        let storage = InMemoryAuthTokenStorage()
+        if let deviceID {
+            try? storage.saveDeviceID(deviceID)
+        }
+        let tokenManager = AuthTokenManager(api: authAPI, storage: storage)
+        return SyncEngine(
+            localStore: store,
+            syncAPI: syncAPI,
+            cursorStore: cursorStore,
+            tokenManager: tokenManager,
+            clock: FixedTestClock(date: referenceNow)
+        )
+    }
+
+    private func makeEvent(
+        id: UUID = UUID(),
+        deviceID: UUID? = UUID(),
+        startedAt: Date,
+        endedAt: Date,
+        deleted: Bool = false
+    ) -> ActivityEvent {
+        ActivityEvent(
+            eventID: id,
+            deviceID: deviceID,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            type: .appActive,
+            appBundleID: "com.apple.dt.Xcode",
+            deleted: deleted,
+            insertedAt: startedAt
+        )
     }
 
     // MARK: - Pull: upserts, tombstones, cursor persistence
