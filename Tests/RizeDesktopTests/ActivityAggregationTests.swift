@@ -46,6 +46,40 @@ final class ActivityAggregationTests: XCTestCase {
         XCTAssertEqual(summary.totalTrackedTime, 600, accuracy: 0.001)
     }
 
+    func testSummarizeBreaksDurationTiesByAscendingBundleID() {
+        let eventZebra = makeEvent(type: .appActive, appBundleID: "com.acme.Zebra", durationSeconds: 100)
+        let eventApple = makeEvent(type: .appActive, appBundleID: "com.acme.Apple", durationSeconds: 100)
+        let eventMango = makeEvent(type: .appActive, appBundleID: "com.acme.Mango", durationSeconds: 100)
+
+        let summary = ActivityAggregation.summarize(
+            events: [eventZebra, eventApple, eventMango],
+            topAppsLimit: 3
+        )
+
+        XCTAssertEqual(
+            summary.topApps.map(\.bundleID),
+            ["com.acme.Apple", "com.acme.Mango", "com.acme.Zebra"]
+        )
+    }
+
+    func testSummarizeTieBreakIsStableAcrossTheTopAppsLimitBoundary() {
+        // All four apps tie on duration; only the alphabetically-first two
+        // should survive the limit, in ascending bundleID order — the tie
+        // straddles the `topAppsLimit` cutoff rather than falling entirely
+        // inside or outside it.
+        let eventDelta = makeEvent(type: .appActive, appBundleID: "com.acme.Delta", durationSeconds: 100)
+        let eventAlpha = makeEvent(type: .appActive, appBundleID: "com.acme.Alpha", durationSeconds: 100)
+        let eventCharlie = makeEvent(type: .appActive, appBundleID: "com.acme.Charlie", durationSeconds: 100)
+        let eventBravo = makeEvent(type: .appActive, appBundleID: "com.acme.Bravo", durationSeconds: 100)
+
+        let summary = ActivityAggregation.summarize(
+            events: [eventDelta, eventAlpha, eventCharlie, eventBravo],
+            topAppsLimit: 2
+        )
+
+        XCTAssertEqual(summary.topApps.map(\.bundleID), ["com.acme.Alpha", "com.acme.Bravo"])
+    }
+
     func testSummarizeAccumulatesMultipleEventsForTheSameApp() {
         let firstEvent = makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 100)
         let secondEvent = makeEvent(type: .appActive, appBundleID: "com.acme.Editor", durationSeconds: 50)

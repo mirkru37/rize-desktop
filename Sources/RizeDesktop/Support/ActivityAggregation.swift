@@ -26,12 +26,14 @@ enum ActivityAggregation {
 
     /// Sums `appActive` event durations — idle/locked segments are not
     /// "tracked time" — and ranks apps by total duration, descending,
-    /// keeping only the top `topAppsLimit`. Events of other types, or
-    /// missing a bundle id, are ignored for the per-app breakdown but any
-    /// non-positive-duration row is ignored entirely as defensive noise
-    /// filtering (closed segments should never be non-positive by
-    /// construction, but the view model must not crash or show negative
-    /// numbers if one ever is).
+    /// keeping only the top `topAppsLimit`. Ties are broken by ascending
+    /// `bundleID` so the ordering (and which apps land inside the limit) is
+    /// deterministic rather than depending on dictionary iteration order.
+    /// Events of other types, or missing a bundle id, are ignored for the
+    /// per-app breakdown but any non-positive-duration row is ignored
+    /// entirely as defensive noise filtering (closed segments should never
+    /// be non-positive by construction, but the view model must not crash or
+    /// show negative numbers if one ever is).
     static func summarize(events: [ActivityEvent], topAppsLimit: Int) -> Summary {
         var durationByApp: [String: TimeInterval] = [:]
         var total: TimeInterval = 0
@@ -50,7 +52,12 @@ enum ActivityAggregation {
 
         let topApps = durationByApp
             .map { AppUsage(bundleID: $0.key, duration: $0.value) }
-            .sorted { $0.duration > $1.duration }
+            .sorted {
+                if $0.duration != $1.duration {
+                    return $0.duration > $1.duration
+                }
+                return $0.bundleID < $1.bundleID
+            }
             .prefix(topAppsLimit)
 
         return Summary(totalTrackedTime: total, topApps: Array(topApps))
