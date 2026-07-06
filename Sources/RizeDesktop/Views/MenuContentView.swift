@@ -10,6 +10,8 @@ import SwiftUI
 struct MenuContentView: View {
     let viewModel: MenuContentViewModel
 
+    @State private var showsLoginSheet = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
@@ -20,9 +22,63 @@ struct MenuContentView: View {
             if !viewModel.topApps.isEmpty {
                 topAppsList
             }
+            if let authSession = viewModel.authSession {
+                Divider()
+                authAndSyncSection(authSession)
+            }
         }
         .padding()
         .frame(width: 280)
+        .sheet(isPresented: $showsLoginSheet) {
+            if let authSession = viewModel.authSession {
+                LoginView(authSession: authSession) {
+                    showsLoginSheet = false
+                }
+            }
+        }
+    }
+
+    /// The sign-in entry point (signed out) or account/sync status
+    /// (signed in), per the RIZ-41 brief's "minimal login UI ... sync status
+    /// in the menu (signed-in state, last sync time)" requirement.
+    @ViewBuilder
+    private func authAndSyncSection(_ authSession: AuthSessionViewModel) -> some View {
+        if authSession.isSignedIn {
+            VStack(alignment: .leading, spacing: 4) {
+                if let email = authSession.userEmail {
+                    Text(email)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(syncStatusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Button("Sign Out") {
+                    Task { await authSession.logout() }
+                }
+                .font(.caption)
+            }
+        } else {
+            Button("Sign In") {
+                showsLoginSheet = true
+            }
+        }
+    }
+
+    private var syncStatusText: String {
+        guard let syncStatus = viewModel.syncStatus else {
+            return "Sync not configured"
+        }
+        if syncStatus.isSyncing {
+            return "Syncing…"
+        }
+        if let lastSyncedAt = syncStatus.lastSyncedAt {
+            return "Last synced \(lastSyncedAt.formatted(date: .omitted, time: .shortened))"
+        }
+        if syncStatus.lastErrorMessage != nil {
+            return "Sync failed — will retry"
+        }
+        return "Not yet synced"
     }
 
     private var header: some View {
