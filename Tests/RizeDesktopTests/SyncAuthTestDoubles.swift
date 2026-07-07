@@ -148,6 +148,18 @@ actor FakeAuthAPIClient: AuthAPIClient {
     private(set) var refreshCallCount = 0
     private(set) var logoutCallCount = 0
 
+    /// Optional rendezvous gate for tests asserting single-flight refresh
+    /// behavior: with it armed, `refresh(...)` suspends after being called
+    /// (i.e. after `AuthTokenManager` has already set its in-flight refresh
+    /// task) until the test explicitly releases it via `openRefreshGate()`.
+    /// This lets a test hold a winning refresh open for as long as needed to
+    /// deterministically prove a second caller joins it, instead of racing
+    /// scheduler timing (same technique as `FakeTokenizedSyncAPIClient`'s
+    /// push gate).
+    private var isRefreshGateArmed = false
+    private var refreshGateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var onRefreshGateArrival: (@Sendable () -> Void)?
+
     func setLoginBehavior(_ behavior: Behavior) {
         loginBehavior = behavior
     }
@@ -164,6 +176,31 @@ actor FakeAuthAPIClient: AuthAPIClient {
         logoutError = error
     }
 
+    /// Arms the refresh gate: the next `refresh(...)` call suspends at entry
+    /// until `openRefreshGate()` releases it. `handler` fires the instant the
+    /// call arrives, before it suspends.
+    func armRefreshGate(onArrival handler: @escaping @Sendable () -> Void) {
+        isRefreshGateArmed = true
+        onRefreshGateArrival = handler
+    }
+
+    /// Releases any `refresh(...)` call currently suspended at the gate, and
+    /// disarms it so future calls proceed without suspending.
+    func openRefreshGate() {
+        isRefreshGateArmed = false
+        let waiters = refreshGateWaiters
+        refreshGateWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private func waitAtRefreshGateIfArmed() async {
+        guard isRefreshGateArmed else { return }
+        onRefreshGateArrival?()
+        await withCheckedContinuation { continuation in
+            refreshGateWaiters.append(continuation)
+        }
+    }
+
     func register(email: String, password: String, device: DeviceRequestDTO) async throws -> AuthResponseDTO {
         try resolve(registerBehavior)
     }
@@ -175,10 +212,7 @@ actor FakeAuthAPIClient: AuthAPIClient {
 
     func refresh(refreshToken: String, device: DeviceRequestDTO?) async throws -> AuthResponseDTO {
         refreshCallCount += 1
-        // A single `Task.yield()` (not a wall-clock wait) widens the window
-        // in which concurrent `refreshAccessToken()` callers can observe an
-        // in-flight refresh, without making the test depend on real time.
-        await Task.yield()
+        await waitAtRefreshGateIfArmed()
         return try resolve(refreshBehavior)
     }
 
@@ -315,6 +349,15 @@ actor FakeTokenizedSyncAPIClient: TokenizedSyncAPIClient {
         let waiters = gateWaiters
         gateWaiters.removeAll()
         waiters.forEach { $0.resume() }
+    }
+
+    /// Releases exactly the oldest `pushEvents` call currently suspended at
+    /// the gate (FIFO), leaving the gate armed for subsequent arrivals. Lets
+    /// a test stage releases one caller at a time instead of all-at-once.
+    func releaseOneWaiter() {
+        guard !gateWaiters.isEmpty else { return }
+        let waiter = gateWaiters.removeFirst()
+        waiter.resume()
     }
 
     private func waitAtGateIfArmed() async {

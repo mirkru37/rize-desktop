@@ -51,17 +51,35 @@ final class AuthorizingSyncAPIClientTests: XCTestCase {
         XCTAssertEqual(currentToken, "access-2")
     }
 
-    /// Regression coverage for a flaky first version of this test: with a
-    /// fast fake transport and no gate, one request's whole
-    /// 401->refresh->retry cycle can complete before the other's first
-    /// attempt is even issued, so the two refreshes run sequentially rather
-    /// than concurrently and the assertion below measures nothing. Gating
-    /// both initial `pushEvents` attempts (via `FakeTokenizedSyncAPIClient`'s
-    /// rendezvous gate — same technique as the RIZ-39
-    /// `TrackingEngineReentrancyTests` fix) forces them to actually race
-    /// into `AuthTokenManager.refreshAccessToken()` together. The wait for
-    /// both arrivals is timeout-bounded so a future regression fails fast
-    /// instead of hanging the suite.
+    /// Regression coverage for a flaky earlier version of this test: gating
+    /// only the two initial `pushEvents` attempts (so both observe their 401
+    /// "together") is not enough to deterministically prove single-flight,
+    /// because the return trip from that 401 into
+    /// `AuthTokenManager.refreshAccessToken()` crosses two more actor hops
+    /// (`AuthorizingSyncAPIClient` and then `AuthTokenManager` itself) whose
+    /// relative scheduling order Swift concurrency does not guarantee. On an
+    /// unlucky scheduling the first caller's whole 401->refresh->retry cycle
+    /// can complete — clearing `inFlightRefresh` — before the second caller
+    /// even reaches the `refreshAccessToken()` check, so it legitimately
+    /// starts its own refresh and the assertion flakes (2 refreshes instead
+    /// of 1).
+    ///
+    /// This version removes that race entirely by staging the two calls
+    /// through explicit, one-at-a-time gate releases instead of releasing
+    /// them together and hoping they interleave favorably:
+    /// 1. Release only the first call from the push gate, and wait
+    ///    (`refreshArrived`) until it is confirmed blocked *inside* the
+    ///    fake auth API's `refresh(...)` — i.e. `AuthTokenManager` has
+    ///    already set `inFlightRefresh` and cannot clear it until the test
+    ///    opens that gate.
+    /// 2. Only then release the second call. Because the first call's
+    ///    refresh is provably still pending, the second call is guaranteed —
+    ///    not merely likely — to observe `inFlightRefresh` set and join it
+    ///    rather than starting a second refresh, regardless of how the
+    ///    scheduler interleaves the intermediate actor hops.
+    /// All waits are gate-signaled and timeout-bounded (no sleeps, no
+    /// polling), per the RIZ-39 `TrackingEngineReentrancyTests` rendezvous
+    /// technique this reuses.
     func testConcurrentUnauthorizedRequestsShareASingleRefresh() async throws {
         let authAPI = FakeAuthAPIClient()
         await authAPI.setRefreshBehavior(.success(makeAuthResponse(accessToken: "access-2", refreshToken: "refresh-2")))
@@ -80,14 +98,24 @@ final class AuthorizingSyncAPIClientTests: XCTestCase {
             if count == 1 { firstArrived.fulfill() }
             if count == 2 { secondArrived.fulfill() }
         }
+        let refreshArrived = expectation(description: "the winning refresh call reached its gate")
+        await authAPI.armRefreshGate { refreshArrived.fulfill() }
 
         let client = AuthorizingSyncAPIClient(inner: syncAPI, tokenManager: tokenManager)
 
         async let first = client.pushEvents([], deviceID: "device-1")
-        async let second = client.pushEvents([], deviceID: "device-1")
+        await fulfillment(of: [firstArrived], timeout: 5)
+        await syncAPI.releaseOneWaiter()
 
-        await fulfillment(of: [firstArrived, secondArrived], timeout: 5)
+        // The first call is now guaranteed to be blocked inside the single
+        // winning `refresh(...)` call: `inFlightRefresh` is set and cannot
+        // be cleared until `openRefreshGate()` is called below.
+        await fulfillment(of: [refreshArrived], timeout: 5)
+
+        async let second = client.pushEvents([], deviceID: "device-1")
+        await fulfillment(of: [secondArrived], timeout: 5)
         await syncAPI.openGate()
+        await authAPI.openRefreshGate()
 
         _ = try await (first, second)
 
