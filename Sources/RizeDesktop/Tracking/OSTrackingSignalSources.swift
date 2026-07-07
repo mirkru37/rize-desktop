@@ -112,7 +112,27 @@ final class CGEventIdleTimeSource: IdleTimeSignalSource {
 /// The distributed screen-lock notification and `NSWorkspace` sleep/wake
 /// notifications, per `documentation/architecture-desktop.md` §Tracking
 /// State Machine.
+///
+/// The two centers are injectable (defaulting to the real
+/// `DistributedNotificationCenter`/`NSWorkspace` centers used in
+/// production) purely as a RIZ-67 testability seam: tests substitute plain
+/// `NotificationCenter()` instances so screen-lock/unlock coverage doesn't
+/// depend on the real distributed-notification daemon, which can be
+/// unreliable/sandboxed on a CI runner. Only the base `NotificationCenter`
+/// API (`addObserver`/`removeObserver`) is used, so a plain center is a
+/// drop-in substitute for `DistributedNotificationCenter` here.
 final class SystemStateNotificationSource: SystemStateSignalSource {
+    private let distributedCenter: NotificationCenter
+    private let workspaceCenter: NotificationCenter
+
+    init(
+        distributedCenter: NotificationCenter = DistributedNotificationCenter.default(),
+        workspaceCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
+    ) {
+        self.distributedCenter = distributedCenter
+        self.workspaceCenter = workspaceCenter
+    }
+
     func events() -> AsyncStream<SystemStateSignal> {
         AsyncStream<SystemStateSignal> { (continuation: AsyncStream<SystemStateSignal>.Continuation) in
             let observers = self.registerObservers(yielding: { signal in
@@ -125,8 +145,6 @@ final class SystemStateNotificationSource: SystemStateSignalSource {
     }
 
     private struct RegisteredObservers {
-        let distributedCenter: DistributedNotificationCenter
-        let workspaceCenter: NotificationCenter
         let lock: NSObjectProtocol
         let unlock: NSObjectProtocol
         let sleep: NSObjectProtocol
@@ -134,9 +152,6 @@ final class SystemStateNotificationSource: SystemStateSignalSource {
     }
 
     private func registerObservers(yielding yield: @escaping (SystemStateSignal) -> Void) -> RegisteredObservers {
-        let distributedCenter = DistributedNotificationCenter.default()
-        let workspaceCenter = NSWorkspace.shared.notificationCenter
-
         let lock = distributedCenter.addObserver(
             forName: Notification.Name("com.apple.screenIsLocked"),
             object: nil,
@@ -158,21 +173,14 @@ final class SystemStateNotificationSource: SystemStateSignalSource {
             queue: nil
         ) { _ in yield(.didWake) }
 
-        return RegisteredObservers(
-            distributedCenter: distributedCenter,
-            workspaceCenter: workspaceCenter,
-            lock: lock,
-            unlock: unlock,
-            sleep: sleep,
-            wake: wake
-        )
+        return RegisteredObservers(lock: lock, unlock: unlock, sleep: sleep, wake: wake)
     }
 
     private func removeObservers(_ observers: RegisteredObservers) {
-        observers.distributedCenter.removeObserver(observers.lock)
-        observers.distributedCenter.removeObserver(observers.unlock)
-        observers.workspaceCenter.removeObserver(observers.sleep)
-        observers.workspaceCenter.removeObserver(observers.wake)
+        distributedCenter.removeObserver(observers.lock)
+        distributedCenter.removeObserver(observers.unlock)
+        workspaceCenter.removeObserver(observers.sleep)
+        workspaceCenter.removeObserver(observers.wake)
     }
 }
 

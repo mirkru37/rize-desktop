@@ -22,6 +22,14 @@ final class ActivityAggregationTests: XCTestCase {
         )
     }
 
+    // MARK: - AppUsage
+
+    func testAppUsageIDIsItsBundleID() {
+        let usage = ActivityAggregation.AppUsage(bundleID: "com.acme.Editor", duration: 42)
+
+        XCTAssertEqual(usage.id, "com.acme.Editor")
+    }
+
     // MARK: - summarize
 
     func testSummarizeSumsAppActiveDurationsAndIgnoresOtherTypes() {
@@ -87,6 +95,15 @@ final class ActivityAggregationTests: XCTestCase {
         let summary = ActivityAggregation.summarize(events: [firstEvent, secondEvent], topAppsLimit: 3)
 
         XCTAssertEqual(summary.topApps, [.init(bundleID: "com.acme.Editor", duration: 150)])
+    }
+
+    func testSummarizeCountsTotalTimeButOmitsAppsWithNoBundleIDFromTheBreakdown() {
+        let event = makeEvent(type: .appActive, appBundleID: nil, durationSeconds: 100)
+
+        let summary = ActivityAggregation.summarize(events: [event], topAppsLimit: 3)
+
+        XCTAssertEqual(summary.totalTrackedTime, 100, accuracy: 0.001)
+        XCTAssertEqual(summary.topApps, [])
     }
 
     func testSummarizeIgnoresNonPositiveDurationEvents() {

@@ -11,20 +11,62 @@ final class AuthTokenManagerTests: XCTestCase {
         api: FakeAuthAPIClient,
         storage: InMemoryAuthTokenStorage = InMemoryAuthTokenStorage()
     ) -> AuthTokenManager {
-        AuthTokenManager(api: api, storage: storage, deviceInfoProvider: StubDeviceInfoProvider())
+        makeAuthTokenManager(api: api, storage: storage)
     }
 
-    private struct StubDeviceInfoProvider: DeviceInfoProviding {
-        func makeDevice(existingID: UUID?) -> DeviceRequestDTO {
-            DeviceRequestDTO(
-                id: existingID,
-                platform: "macos",
-                name: "Test",
-                model: "Mac",
-                osVersion: "14.5",
-                appVersion: "0.1.0"
-            )
+    // MARK: - Register
+
+    func testRegisterSuccessSignsInAndPersistsTokens() async throws {
+        let api = FakeAuthAPIClient()
+        let deviceID = UUID()
+        await api.setRegisterBehavior(.success(makeAuthResponse(
+            accessToken: "access-1",
+            refreshToken: "refresh-1",
+            deviceID: deviceID
+        )))
+        let storage = InMemoryAuthTokenStorage()
+        let manager = makeManager(api: api, storage: storage)
+
+        let user = try await manager.register(email: "new@example.com", password: "correct-horse-battery-staple")
+
+        XCTAssertEqual(user.email, "user@example.com")
+        let isSignedIn = await manager.isSignedIn
+        XCTAssertTrue(isSignedIn)
+        let storedDeviceID = try storage.deviceID()
+        XCTAssertEqual(storedDeviceID, deviceID)
+    }
+
+    func testRegisterFailureLeavesSessionSignedOut() async throws {
+        let api = FakeAuthAPIClient()
+        await api.setRegisterBehavior(.failure(TestError.network))
+        let manager = makeManager(api: api)
+
+        do {
+            _ = try await manager.register(email: "new@example.com", password: "wrong")
+            XCTFail("expected register to throw")
+        } catch {
+            // expected
         }
+
+        let isSignedIn = await manager.isSignedIn
+        XCTAssertFalse(isSignedIn)
+    }
+
+    // MARK: - Device id
+
+    func testPersistedDeviceIDReflectsStorageAfterLogin() async throws {
+        let api = FakeAuthAPIClient()
+        let deviceID = UUID()
+        await api.setLoginBehavior(.success(makeAuthResponse(deviceID: deviceID)))
+        let manager = makeManager(api: api)
+
+        let beforeLogin = await manager.persistedDeviceID()
+        XCTAssertNil(beforeLogin)
+
+        _ = try await manager.login(email: "user@example.com", password: "correct-horse-battery-staple")
+
+        let afterLogin = await manager.persistedDeviceID()
+        XCTAssertEqual(afterLogin, deviceID)
     }
 
     // MARK: - Login
