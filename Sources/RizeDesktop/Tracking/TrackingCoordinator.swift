@@ -24,6 +24,22 @@ final class TrackingCoordinator {
     private var systemStateTask: Task<Void, Never>?
     private var pollingTask: Task<Void, Never>?
 
+    /// Which signal `signalAppliedProbe` just finished applying to the
+    /// engine.
+    enum AppliedSignal: Equatable {
+        case frontmostApp
+        case systemState
+        case poll
+    }
+
+    /// Test-only: invoked immediately after each signal has been fully
+    /// applied to the engine (i.e. the corresponding `engine.handle*` call
+    /// has returned), so tests can deterministically sequence a clock
+    /// advance or assertion against "this signal has taken effect" instead
+    /// of guessing with a wall-clock delay or a fixed-interval polling loop.
+    /// Nil in production.
+    var signalAppliedProbe: (@Sendable (AppliedSignal) -> Void)?
+
     /// - Parameter pollingInterval: How often the window-title/idle-time/
     ///   permission loop runs. Defaults to 2s, within the doc's 1-5s range.
     init(
@@ -47,14 +63,16 @@ final class TrackingCoordinator {
     /// Starts (or restarts) all listener/polling loops.
     func start() {
         stop()
-        frontmostAppTask = Task { [engine, frontmostAppSource] in
+        frontmostAppTask = Task { [weak self, engine, frontmostAppSource] in
             for await sample in frontmostAppSource.events() {
                 await engine.handleFrontmostAppChanged(bundleID: sample.bundleID)
+                self?.signalAppliedProbe?(.frontmostApp)
             }
         }
-        systemStateTask = Task { [engine, systemStateSource] in
+        systemStateTask = Task { [weak self, engine, systemStateSource] in
             for await signal in systemStateSource.events() {
                 await engine.handleSystemStateSignal(signal)
+                self?.signalAppliedProbe?(.systemState)
             }
         }
         pollingTask = Task { [weak self] in
@@ -75,6 +93,7 @@ final class TrackingCoordinator {
     private func runPollingLoop() async {
         while !Task.isCancelled {
             await pollOnce()
+            signalAppliedProbe?(.poll)
             try? await Task.sleep(for: pollingInterval)
         }
     }

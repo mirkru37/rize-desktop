@@ -72,6 +72,7 @@ final class ViewRenderingTests: XCTestCase {
 
     func testLoginViewRendersIdleState() {
         let viewModel = AuthSessionViewModel(tokenManager: makeAuthTokenManager())
+        XCTAssertNil(viewModel.errorMessage)
         let view = LoginView(authSession: viewModel, onFinished: {})
 
         _ = view.body

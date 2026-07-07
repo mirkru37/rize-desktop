@@ -5,9 +5,10 @@ import XCTest
 /// protocols to a real `TrackingEngine` (backed by an in-memory
 /// `LocalStore` fake) — the coordinator itself has no logic beyond this
 /// plumbing, per `documentation/architecture-desktop.md` §Tracking
-/// Pipeline. Every wait is bounded, either a small fixed delay (letting the
-/// coordinator's background consumer tasks pick up a just-yielded signal)
-/// or a `pollUntil` with an explicit timeout.
+/// Pipeline. Every wait is a deterministic, timeout-bounded rendezvous on
+/// `TrackingCoordinator.signalAppliedProbe` (a test-only hook fired once a
+/// signal has been fully applied to the engine) rather than a wall-clock
+/// delay or a fixed-interval polling loop — see `expectNextApplied` below.
 final class TrackingCoordinatorTests: XCTestCase {
     private actor FakeLocalStore: LocalStore {
         private(set) var writtenEvents: [ActivityEvent] = []
@@ -127,47 +128,67 @@ final class TrackingCoordinatorTests: XCTestCase {
         return (coordinator, engine)
     }
 
-    func testStartWiresFrontmostAppSignalsToTheEngineAndProducesASegment() async throws {
+    /// Arms `coordinator.signalAppliedProbe` to fulfill `expectation` the
+    /// next time `signal` is fully applied to the engine, then clears itself
+    /// so a signal that keeps firing (e.g. the polling loop) can't
+    /// over-fulfill it.
+    private func expectNextApplied(
+        _ signal: TrackingCoordinator.AppliedSignal,
+        on coordinator: TrackingCoordinator,
+        fulfilling expectation: XCTestExpectation
+    ) {
+        coordinator.signalAppliedProbe = { [weak coordinator] appliedSignal in
+            guard appliedSignal == signal else { return }
+            coordinator?.signalAppliedProbe = nil
+            expectation.fulfill()
+        }
+    }
+
+    func testStartWiresFrontmostAppSignalsToTheEngineAndProducesASegment() async {
         let frontmostApp = ControllableStream<FrontmostAppSample>()
         let systemState = ControllableStream<SystemStateSignal>()
         let (coordinator, _) = makeCoordinator(frontmostApp: frontmostApp, systemState: systemState)
 
+        let editorApplied = expectation(description: "Editor frontmost signal applied to the engine")
+        expectNextApplied(.frontmostApp, on: coordinator, fulfilling: editorApplied)
+
         coordinator.start()
         frontmostApp.continuation.yield(FrontmostAppSample(bundleID: "com.acme.Editor"))
-        // Bounded delay for the coordinator's background consumer task to
-        // pick up the just-yielded sample before the segment is closed.
-        try await Task.sleep(for: .milliseconds(100))
+        // Deterministic rendezvous: only advance the clock once "Editor" has
+        // actually been applied to the engine, so its segment's `startedAt`
+        // is guaranteed to precede the advance rather than racing it.
+        await fulfillment(of: [editorApplied], timeout: 5)
 
         clock.advance(by: 10)
-        frontmostApp.continuation.yield(FrontmostAppSample(bundleID: "com.acme.Other"))
 
-        try await pollUntil(timeout: 5) {
-            await self.store.writtenEvents.isEmpty == false
-        }
+        let otherApplied = expectation(description: "Other frontmost signal applied (closes Editor's segment)")
+        expectNextApplied(.frontmostApp, on: coordinator, fulfilling: otherApplied)
+        frontmostApp.continuation.yield(FrontmostAppSample(bundleID: "com.acme.Other"))
+        await fulfillment(of: [otherApplied], timeout: 5)
         coordinator.stop()
 
         let events = await store.writtenEvents
         XCTAssertEqual(events.first?.appBundleID, "com.acme.Editor")
     }
 
-    func testStartWiresSystemStateSignalsToTheEngine() async throws {
+    func testStartWiresSystemStateSignalsToTheEngine() async {
         let frontmostApp = ControllableStream<FrontmostAppSample>()
         let systemState = ControllableStream<SystemStateSignal>()
         let (coordinator, engine) = makeCoordinator(frontmostApp: frontmostApp, systemState: systemState)
 
+        let lockedApplied = expectation(description: "screenLocked signal applied to the engine")
+        expectNextApplied(.systemState, on: coordinator, fulfilling: lockedApplied)
+
         coordinator.start()
         systemState.continuation.yield(.screenLocked)
-
-        try await pollUntil(timeout: 5) {
-            await engine.state == .locked
-        }
+        await fulfillment(of: [lockedApplied], timeout: 5)
         coordinator.stop()
 
         let finalState = await engine.state
         XCTAssertEqual(finalState, .locked)
     }
 
-    func testStartTwiceRestartsThePollingLoopRatherThanDoublingIt() async throws {
+    func testStartTwiceRestartsThePollingLoopRatherThanDoublingIt() async {
         let frontmostApp = ControllableStream<FrontmostAppSample>()
         let systemState = ControllableStream<SystemStateSignal>()
         let (coordinator, engine) = makeCoordinator(
@@ -176,31 +197,15 @@ final class TrackingCoordinatorTests: XCTestCase {
             idleSeconds: 301
         )
 
-        coordinator.start()
-        coordinator.start()
+        let idleApplied = expectation(description: "a poll cycle applied the idle transition to the engine")
+        expectNextApplied(.poll, on: coordinator, fulfilling: idleApplied)
 
-        try await pollUntil(timeout: 5) {
-            await engine.state == .idle
-        }
+        coordinator.start()
+        coordinator.start()
+        await fulfillment(of: [idleApplied], timeout: 5)
         coordinator.stop()
 
         let finalState = await engine.state
         XCTAssertEqual(finalState, .idle)
-    }
-
-    /// Bounded poll: retries `condition` every 10ms up to `timeout` seconds,
-    /// failing the test (rather than hanging) if it never becomes true.
-    private func pollUntil(
-        timeout: TimeInterval,
-        condition: () async throws -> Bool
-    ) async rethrows {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if try await condition() {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("condition was not met within \(timeout)s")
     }
 }
