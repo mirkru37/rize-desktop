@@ -1,13 +1,83 @@
 name: Release
 
+# RIZ-76: release workflow with backend base URL injection and conditional
+# Developer ID signing + notarization.
+#
+# Backend base URL (RIZ-76): both build modes below inject
+# `RIZE_BACKEND_BASE_URL` from the `BACKEND_BASE_URL` GitHub *repository
+# variable* (Settings > Secrets and variables > Actions > Variables) into a
+# generated `Config.local.xcconfig`, which `Config.example.xcconfig`
+# `#include?`s and which wins over its own committed default (see that
+# file). If `vars.BACKEND_BASE_URL` is unset, the build falls back to the
+# same `http://localhost:8080/v1` default committed in `Config.example.xcconfig`.
+# See `UserDefaultsBaseURLProvider`
+# (Sources/RizeDesktop/Networking/BaseURLProvider.swift) for how the app
+# reads the resulting Info.plist key (`RIZE_BACKEND_BASE_URL`) at runtime.
+# This mirrors rize-mobile's RIZ-77 release workflow, which solved the
+# identical problem the same way.
+#
+# Conditional signing (RIZ-76): the `guard-signing` job below checks for
+# five secrets — MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD,
+# APPLE_TEAM_ID, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD — via a job-level
+# `env:` block, because `if:` conditions cannot read `secrets.*` directly
+# (same bridging pattern as rize-mobile's release.yml `guard-signing` job /
+# rize-backend's deploy-integration.yml guard job). When all five are
+# present, `build-signed-notarized-artifact` imports the Developer ID
+# Application certificate into a temporary keychain, builds a Release
+# build signed with hardened runtime, submits it to `notarytool`, staples
+# the ticket, and attaches `RizeDesktop-signed.zip`. When any secret is
+# absent, `build-unsigned-artifact` keeps today's unsigned
+# `CODE_SIGNING_ALLOWED=NO` path, attaching `RizeDesktop-unsigned.zip`
+# (renamed from the previous `RizeDesktop.zip`) with the existing Gatekeeper
+# warning note. The two jobs are mutually exclusive; exactly one runs per
+# tag push, and the workflow is green either way.
+#
+# Per this app's CLAUDE.md distribution model — Developer ID + notarization
+# with hardened runtime, no App Sandbox (the Accessibility API is
+# incompatible with sandboxing) — the signed path below sets
+# `CODE_SIGN_STYLE=Manual` with a "Developer ID Application" identity and
+# relies on `project.yml`'s `ENABLE_HARDENED_RUNTIME: true`. It must NOT
+# add sandbox entitlements.
+
 on:
   push:
     tags:
       - "v*"
 
 jobs:
-  build-and-release:
+  # Guard job: runs unconditionally and first. `if:` conditions cannot read
+  # `secrets.*` directly, so this bridges the check through a job-level
+  # `env:` block and an output.
+  guard-signing:
+    name: Guard - Developer ID signing credentials check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check Developer ID signing secrets
+        id: check
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          if [ -n "$MACOS_CERT_P12_BASE64" ] && [ -n "$MACOS_CERT_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]; then
+            echo "Developer ID signing secrets are present — building a signed, notarized artifact."
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Developer ID signing secrets are absent — falling back to the unsigned build. See README.md#configuration for the secrets required to enable signed releases."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-unsigned-artifact:
+    name: Build unsigned artifact
+    needs: guard-signing
+    if: needs.guard-signing.outputs.configured != 'true'
     runs-on: macos-15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,13 +85,26 @@ jobs:
       - name: Install tooling
         run: brew install xcodegen
 
+      - name: Configure backend base URL
+        env:
+          BACKEND_BASE_URL: ${{ vars.BACKEND_BASE_URL }}
+        run: |
+          URL="${BACKEND_BASE_URL:-http://localhost:8080/v1}"
+          # xcconfig treats `//` as a comment delimiter anywhere on a line
+          # (see Config.example.xcconfig) — escape it with `$()` so a raw
+          # `http://...` value isn't silently truncated to `http:`.
+          # The sed replacement below is a literal $() escape, not a shell expansion.
+          # shellcheck disable=SC2016
+          ESCAPED_URL=$(printf '%s' "$URL" | sed 's#//#/$()/#')
+          echo "RIZE_BACKEND_BASE_URL = ${ESCAPED_URL}" > Config.local.xcconfig
+
       - name: Generate Xcode project
         run: xcodegen generate
 
       # NOTE: this build is intentionally unsigned (CODE_SIGNING_ALLOWED=NO).
-      # Developer ID signing + notarization is tracked as a later ticket; the
-      # artifact attached to this release is not notarized and will trigger
-      # Gatekeeper warnings on the end user's machine until that ticket lands.
+      # It only runs when Developer ID signing secrets are absent; the
+      # attached artifact is not notarized and will trigger Gatekeeper
+      # warnings on the end user's machine.
       - name: Build (Release, unsigned)
         run: |
           xcodebuild -project RizeDesktop.xcodeproj -scheme RizeDesktop \
@@ -31,10 +114,141 @@ jobs:
       - name: Zip .app
         run: |
           APP_PATH="build/Build/Products/Release/RizeDesktop.app"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" RizeDesktop.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" RizeDesktop-unsigned.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: RizeDesktop.zip
+          files: RizeDesktop-unsigned.zip
           generate_release_notes: true
+          body: |
+            Unsigned build of RizeDesktop (tag ${{ github.ref_name }}).
+
+            This artifact is not code-signed or notarized and will trigger
+            Gatekeeper warnings on the end user's machine. Signed, notarized
+            releases require the MACOS_CERT_P12_BASE64, MACOS_CERT_PASSWORD,
+            APPLE_TEAM_ID, APPLE_ID, and APPLE_APP_SPECIFIC_PASSWORD secrets
+            to be configured on this repo (see README.md#configuration);
+            once present, this same workflow produces a signed
+            RizeDesktop-signed.zip instead.
+
+  build-signed-notarized-artifact:
+    name: Build signed and notarized artifact
+    needs: guard-signing
+    if: needs.guard-signing.outputs.configured == 'true'
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: brew install xcodegen
+
+      - name: Configure backend base URL
+        env:
+          BACKEND_BASE_URL: ${{ vars.BACKEND_BASE_URL }}
+        run: |
+          URL="${BACKEND_BASE_URL:-http://localhost:8080/v1}"
+          # See the matching step in build-unsigned-artifact for why the
+          # `//` needs the `$()` escape.
+          # shellcheck disable=SC2016
+          ESCAPED_URL=$(printf '%s' "$URL" | sed 's#//#/$()/#')
+          echo "RIZE_BACKEND_BASE_URL = ${ESCAPED_URL}" > Config.local.xcconfig
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Import signing certificate into temporary keychain
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(uuidgen)
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          echo -n "$MACOS_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" "$(security list-keychains -d user | sed 's/"//g' | xargs)"
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Find Developer ID Application identity
+        run: |
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -n1 | sed -E 's/^[[:space:]]*[0-9]+\) [A-F0-9]+ "(.*)"$/\1/')
+          if [ -z "$IDENTITY" ]; then
+            echo "No 'Developer ID Application' identity found in the imported certificate" >&2
+            exit 1
+          fi
+          echo "CODE_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      # Signed with hardened runtime (project.yml's ENABLE_HARDENED_RUNTIME)
+      # and a Developer ID Application identity. No App Sandbox entitlements
+      # are applied here or in project.yml, per this app's distribution
+      # model (the Accessibility API is incompatible with sandboxing).
+      - name: Build (Release, signed)
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild -project RizeDesktop.xcodeproj -scheme RizeDesktop \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY="$CODE_SIGN_IDENTITY" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            build
+
+      - name: Zip .app for notarization
+        run: |
+          APP_PATH="build/Build/Products/Release/RizeDesktop.app"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" RizeDesktop-notarize.zip
+
+      - name: Submit for notarization
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit RizeDesktop-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+      - name: Staple notarization ticket
+        run: |
+          APP_PATH="build/Build/Products/Release/RizeDesktop.app"
+          xcrun stapler staple "$APP_PATH"
+
+      - name: Zip stapled .app for release
+        run: |
+          APP_PATH="build/Build/Products/Release/RizeDesktop.app"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" RizeDesktop-signed.zip
+
+      - name: Clean up temporary keychain
+        if: always()
+        run: |
+          if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RizeDesktop-signed.zip
+          generate_release_notes: true
+          body: |
+            Signed and notarized build of RizeDesktop (tag ${{ github.ref_name }}).
+
+            This artifact is signed with a Developer ID Application
+            identity, built with hardened runtime and no App Sandbox
+            entitlements, and has been submitted to Apple's notary service
+            and stapled with the resulting ticket.
