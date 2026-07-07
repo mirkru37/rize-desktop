@@ -9,7 +9,7 @@ name: Release
 # generated `Config.local.xcconfig`, which `Config.example.xcconfig`
 # `#include?`s and which wins over its own committed default (see that
 # file). If `vars.BACKEND_BASE_URL` is unset, the build falls back to the
-# same `http://localhost:8080` default committed in `Config.example.xcconfig`.
+# same `http://localhost:8080/v1` default committed in `Config.example.xcconfig`.
 # See `UserDefaultsBaseURLProvider`
 # (Sources/RizeDesktop/Networking/BaseURLProvider.swift) for how the app
 # reads the resulting Info.plist key (`RIZE_BACKEND_BASE_URL`) at runtime.
@@ -89,7 +89,7 @@ jobs:
         env:
           BACKEND_BASE_URL: ${{ vars.BACKEND_BASE_URL }}
         run: |
-          URL="${BACKEND_BASE_URL:-http://localhost:8080}"
+          URL="${BACKEND_BASE_URL:-http://localhost:8080/v1}"
           # xcconfig treats `//` as a comment delimiter anywhere on a line
           # (see Config.example.xcconfig) — escape it with `$()` so a raw
           # `http://...` value isn't silently truncated to `http:`.
@@ -149,7 +149,7 @@ jobs:
         env:
           BACKEND_BASE_URL: ${{ vars.BACKEND_BASE_URL }}
         run: |
-          URL="${BACKEND_BASE_URL:-http://localhost:8080}"
+          URL="${BACKEND_BASE_URL:-http://localhost:8080/v1}"
           # See the matching step in build-unsigned-artifact for why the
           # `//` needs the `$()` escape.
           # shellcheck disable=SC2016

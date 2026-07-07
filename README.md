@@ -42,7 +42,7 @@ Coverage thresholds and other CI-only knobs (e.g. `COVERAGE_THRESHOLD` in the `M
 
 Pushing a `v*` tag builds and attaches a release artifact:
 
-- **Backend base URL**: set the `BACKEND_BASE_URL` GitHub *repository variable* (Settings → Secrets and variables → Actions → Variables) to the URL the released app should point at. The workflow writes it into a generated `Config.local.xcconfig` before `xcodegen generate`, so it flows through the same `RIZE_BACKEND_BASE_URL` seam described above. If unset, the build falls back to `Config.example.xcconfig`'s committed `http://localhost:8080` default.
+- **Backend base URL**: set the `BACKEND_BASE_URL` GitHub *repository variable* (Settings → Secrets and variables → Actions → Variables) to the URL the released app should point at. The workflow writes it into a generated `Config.local.xcconfig` before `xcodegen generate`, so it flows through the same `RIZE_BACKEND_BASE_URL` seam described above. If unset, the build falls back to `Config.example.xcconfig`'s committed `http://localhost:8080/v1` default.
 - **Signing**: if all five secrets `MACOS_CERT_P12_BASE64` (base64-encoded Developer ID Application .p12), `MACOS_CERT_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_ID`, and `APPLE_APP_SPECIFIC_PASSWORD` (an [app-specific password](https://support.apple.com/en-us/102654) for `notarytool`) are configured as repo secrets, the workflow builds a Developer ID-signed, hardened-runtime, notarized-and-stapled `RizeDesktop-signed.zip`. If any is missing, it falls back to an unsigned `RizeDesktop-unsigned.zip` (Gatekeeper will warn on install). No App Sandbox entitlements are applied in either path, per this app's distribution model.
 
 ## Documentation
