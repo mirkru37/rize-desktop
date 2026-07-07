@@ -31,6 +31,12 @@ actor AuthTokenManager {
     private var currentUser: AuthenticatedUser?
     private var inFlightRefresh: Task<String, Error>?
 
+    /// Test-only: invoked when a caller joins an already-in-flight refresh
+    /// instead of starting a new one. Used to make single-flight tests
+    /// deterministic (observing the join itself, rather than racing
+    /// scheduler timing); nil in production.
+    private var refreshJoinProbe: (@Sendable () -> Void)?
+
     init(
         api: AuthAPIClient,
         storage: AuthTokenStorage,
@@ -88,6 +94,7 @@ actor AuthTokenManager {
     @discardableResult
     func refreshAccessToken() async throws -> String {
         if let inFlightRefresh {
+            refreshJoinProbe?()
             return try await inFlightRefresh.value
         }
 
@@ -95,6 +102,11 @@ actor AuthTokenManager {
         inFlightRefresh = task
         defer { inFlightRefresh = nil }
         return try await task.value
+    }
+
+    /// Test-only hook: see `refreshJoinProbe`.
+    func setRefreshJoinProbe(_ probe: (@Sendable () -> Void)?) {
+        refreshJoinProbe = probe
     }
 
     private func performRefresh() async throws -> String {
