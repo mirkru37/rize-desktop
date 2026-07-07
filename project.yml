@@ -49,6 +49,9 @@ targets:
         LSUIElement: true
         NSHumanReadableCopyright: "Copyright © RizeClone."
         RIZE_BACKEND_BASE_URL: "$(RIZE_BACKEND_BASE_URL)"
+        # ATS: allows plain-HTTP to the integration backend (bare-IP host). MUST be removed/replaced with TLS before any App Store submission.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
 
   RizeDesktopTests:
     type: bundle.unit-test
